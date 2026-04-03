@@ -761,43 +761,42 @@ class SingleTree:
             pending.append((self.left_child_cpu[node_id], row_idx[left_mask]))
         return pred
 
-    def predict_batch_gpu(self, x: np.ndarray) -> np.ndarray:
-        x_gpu = cp.asarray(x, dtype=cp.float32)
-        pred_gpu = cp.empty((x_gpu.shape[0], self.n_classes), dtype=cp.float32)
-        blocks_1d = (x_gpu.shape[0] + TRAINING_CONFIG.get("threads_per_block") - 1) // TRAINING_CONFIG.get("threads_per_block")
-        predict_rows_gpu_kernel[blocks_1d, TRAINING_CONFIG.get("threads_per_block")](
-            x_gpu,
-            self.split_feature_gpu,
-            self.split_threshold_gpu,
-            self.left_child_gpu,
-            self.right_child_gpu,
-            self.is_leaf_gpu,
-            self.leaf_value_gpu,
-            pred_gpu,
-        )
-        cuda.synchronize()
-        return cp.asnumpy(pred_gpu)
+    def predict_batch_gpu(self, x: np.ndarray | None = None, bins: np.ndarray | None = None) -> np.ndarray:
+        if (x is None) == (bins is None):
+            raise ValueError("Provide exactly one of x or bins.")
 
-    def predict_batch_gpu_bins(self, bins: np.ndarray) -> np.ndarray:
-        bins_gpu = cp.asarray(bins)
-        pred_gpu = cp.empty((bins_gpu.shape[0], self.n_classes), dtype=cp.float32)
-        blocks_1d = (bins_gpu.shape[0] + TRAINING_CONFIG.get("threads_per_block") - 1) // TRAINING_CONFIG.get("threads_per_block")
-        predict_rows_gpu_bins_kernel[blocks_1d, TRAINING_CONFIG.get("threads_per_block")](
-            bins_gpu,
-            self.split_feature_gpu,
-            self.split_bin_gpu,
-            self.left_child_gpu,
-            self.right_child_gpu,
-            self.is_leaf_gpu,
-            self.leaf_value_gpu,
-            pred_gpu,
-        )
+        pred_gpu = cp.empty(((x.shape[0] if x is not None else bins.shape[0]), self.n_classes), dtype=cp.float32)
+        blocks_1d = (pred_gpu.shape[0] + TRAINING_CONFIG.get("threads_per_block") - 1) // TRAINING_CONFIG.get("threads_per_block")
+        if bins is not None:
+            bins_gpu = cp.asarray(bins)
+            predict_rows_gpu_bins_kernel[blocks_1d, TRAINING_CONFIG.get("threads_per_block")](
+                bins_gpu,
+                self.split_feature_gpu,
+                self.split_bin_gpu,
+                self.left_child_gpu,
+                self.right_child_gpu,
+                self.is_leaf_gpu,
+                self.leaf_value_gpu,
+                pred_gpu,
+            )
+        else:
+            x_gpu = cp.asarray(x, dtype=cp.float32)
+            predict_rows_gpu_kernel[blocks_1d, TRAINING_CONFIG.get("threads_per_block")](
+                x_gpu,
+                self.split_feature_gpu,
+                self.split_threshold_gpu,
+                self.left_child_gpu,
+                self.right_child_gpu,
+                self.is_leaf_gpu,
+                self.leaf_value_gpu,
+                pred_gpu,
+            )
         cuda.synchronize()
         return cp.asnumpy(pred_gpu)
 
     def predict_batch(self, x: np.ndarray) -> np.ndarray:
         if TRAINING_CONFIG.get("predict_method") == "gpu":
-            return self.predict_batch_gpu(x)
+            return self.predict_batch_gpu(x=x)
         return self.predict_batch_cpu(x)
 
     def print_tree(self, node_id: int = 0, indent: str = "") -> None:
@@ -1161,7 +1160,7 @@ def _evaluate_cached_training_stream(tree: SingleTree, quantized_train_batches: 
 
     if TRAINING_CONFIG.get("predict_method") == "gpu":
         for batch in quantized_train_batches:
-            pred_cpu = tree.predict_batch_gpu_bins(batch[0])
+            pred_cpu = tree.predict_batch_gpu(bins=batch[0])
             error_sum, denominator = OBJECTIVE.mse_from_predictions(
                 pred_cpu,
                 batch[1],
@@ -1214,29 +1213,6 @@ def _profile_fresh_inference(tree: SingleTree, provider_kwargs: dict):
     print(f"Fresh inference mean sum of class predictions: {fresh_sum_prob / max(fresh_count, 1):.6f}")
 
 
-# -----------------------------------------------------------------------------
-# Plotting section. This will move out next.
-# -----------------------------------------------------------------------------
-
-def _emit_plot_artifacts(tree: SingleTree, provider_kwargs: dict):
-    if not (ARGS.full_output or not ARGS.profile):
-        return
-    print()
-    print("Tree:")
-    tree.print_tree()
-    make_feature_weighted_hist_plots(
-        training_id=TRAINING_CONFIG.get("plot_training_id"),
-        provider_class=GaussianClassStreamProvider,
-        provider_kwargs=provider_kwargs,
-        predictor=tree.predict_batch,
-        n_features=DATASET_CONFIG.get("n_features"),
-        n_classes=DATASET_CONFIG.get("n_classes"),
-        n_bins=TRAINING_CONFIG.get("plot_bins"),
-    )
-    print()
-    print(f"Saved validation plots under ./plots/{TRAINING_CONFIG.get('plot_training_id')}/")
-
-
 def main():
     provider_kwargs = _provider_kwargs()
     print("GPU:", cuda.get_current_device().name)
@@ -1275,9 +1251,23 @@ def main():
         print(f"Final streamed train MSE: {train_mse:.6f}")
     print(f"Mean sum of class predictions: {mean_sum_prob:.6f}")
     print(f"Prediction method: {TRAINING_CONFIG.get('predict_method')}")
-
-    _emit_plot_artifacts(tree, provider_kwargs)
+    return tree, provider_kwargs
 
 
 if __name__ == "__main__":
-    main()
+    trained_tree, provider_kwargs = main()
+    if ARGS.full_output or not ARGS.profile:
+        print()
+        print("Tree:")
+        trained_tree.print_tree()
+        make_feature_weighted_hist_plots(
+            training_id=TRAINING_CONFIG.get("plot_training_id"),
+            provider_class=GaussianClassStreamProvider,
+            provider_kwargs=provider_kwargs,
+            predictor=trained_tree.predict_batch,
+            n_features=DATASET_CONFIG.get("n_features"),
+            n_classes=DATASET_CONFIG.get("n_classes"),
+            n_bins=TRAINING_CONFIG.get("plot_bins"),
+        )
+        print()
+        print(f"Saved validation plots under ./plots/{TRAINING_CONFIG.get('plot_training_id')}/")
