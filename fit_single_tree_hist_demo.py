@@ -146,6 +146,7 @@ THREADS_PER_BLOCK = TRAINING_CONFIG["threads_per_block"]
 PREDICT_METHOD = TRAINING_CONFIG["predict_method"]
 MAX_CLASS_CAPACITY = 16
 BIN_NP_DTYPE = np.uint8 if MAX_BIN <= 256 else np.uint16
+BIN_CP_DTYPE = cp.uint8 if MAX_BIN <= 256 else cp.uint16
 
 if GROW_POLICY not in {"depthwise", "lossguide"}:
     raise ValueError("grow_policy must be 'depthwise' or 'lossguide'.")
@@ -581,13 +582,15 @@ cuts_gpu = cp.asarray(cuts_cpu)
 cache_build_profile = _start_profile("cache_build") if args.profile else None
 quantized_train_batches = []
 for x_cpu, y_cpu in GaussianClassStreamProvider(**provider_kwargs):
-    bins_cpu = np.empty((x_cpu.shape[0], x_cpu.shape[1]), dtype=BIN_NP_DTYPE)
-    for feature_idx in range(x_cpu.shape[1]):
-        bins_cpu[:, feature_idx] = np.searchsorted(
-            cuts_cpu[feature_idx],
-            x_cpu[:, feature_idx],
-            side="left",
-        )
+    x_gpu = cp.asarray(x_cpu, dtype=cp.float32)
+    bins_gpu = cp.empty((x_cpu.shape[0], x_cpu.shape[1]), dtype=BIN_CP_DTYPE)
+    quant_blocks = (
+        (x_gpu.shape[0] + 15) // 16,
+        (x_gpu.shape[1] + 15) // 16,
+    )
+    quantize_batch[quant_blocks, (16, 16)](x_gpu, cuts_gpu, bins_gpu)
+    cuda.synchronize()
+    bins_cpu = cp.asnumpy(bins_gpu)
     quantized_train_batches.append((bins_cpu, y_cpu.copy()))
     if cache_build_profile is not None:
         _update_profile(cache_build_profile)
