@@ -145,6 +145,7 @@ PLOT_BINS = TRAINING_CONFIG["plot_bins"]
 THREADS_PER_BLOCK = TRAINING_CONFIG["threads_per_block"]
 PREDICT_METHOD = TRAINING_CONFIG["predict_method"]
 MAX_CLASS_CAPACITY = 16
+BIN_NP_DTYPE = np.uint8 if MAX_BIN <= 256 else np.uint16
 
 if GROW_POLICY not in {"depthwise", "lossguide"}:
     raise ValueError("grow_policy must be 'depthwise' or 'lossguide'.")
@@ -555,7 +556,7 @@ cuts_gpu = cp.asarray(cuts_cpu)
 cache_build_profile = _start_profile("cache_build") if args.profile else None
 quantized_train_batches = []
 for x_cpu, y_cpu in GaussianClassStreamProvider(**provider_kwargs):
-    bins_cpu = np.empty((x_cpu.shape[0], x_cpu.shape[1]), dtype=np.uint16)
+    bins_cpu = np.empty((x_cpu.shape[0], x_cpu.shape[1]), dtype=BIN_NP_DTYPE)
     for feature_idx in range(x_cpu.shape[1]):
         bins_cpu[:, feature_idx] = np.searchsorted(
             cuts_cpu[feature_idx],
