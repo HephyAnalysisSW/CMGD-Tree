@@ -410,6 +410,31 @@ def predict_rows_gpu_kernel(
             pred_out[i, c] = leaf_value[node, c]
 
 
+@cuda.jit
+def predict_rows_gpu_bins_kernel(
+    bins,
+    split_feature,
+    split_bin,
+    left_child,
+    right_child,
+    is_leaf,
+    leaf_value,
+    pred_out,
+):
+    i = cuda.grid(1)
+    if i < bins.shape[0]:
+        node = 0
+        while is_leaf[node] == 0:
+            feature = split_feature[node]
+            threshold_bin = split_bin[node]
+            if bins[i, feature] <= threshold_bin:
+                node = left_child[node]
+            else:
+                node = right_child[node]
+        for c in range(pred_out.shape[1]):
+            pred_out[i, c] = leaf_value[node, c]
+
+
 def mse_leaf_value(sum_y: np.ndarray, count: int, reg_lambda: float) -> np.ndarray:
     return sum_y / (count + reg_lambda)
 
@@ -840,6 +865,7 @@ if training_profile is not None:
 
 leaf_value_cpu = np.zeros((len(nodes), N_CLASSES), dtype=np.float32)
 split_feature_cpu = np.array([node.split_feature for node in nodes], dtype=np.int32)
+split_bin_cpu = np.array([node.split_bin for node in nodes], dtype=np.int32)
 split_threshold_cpu = np.array([node.split_threshold for node in nodes], dtype=np.float32)
 left_child_cpu = np.array([node.left_child for node in nodes], dtype=np.int32)
 right_child_cpu = np.array([node.right_child for node in nodes], dtype=np.int32)
@@ -849,6 +875,7 @@ for node in nodes:
         leaf_value_cpu[node.node_id] = node.value
 
 split_feature_gpu = cp.asarray(split_feature_cpu)
+split_bin_gpu = cp.asarray(split_bin_cpu)
 split_threshold_gpu = cp.asarray(split_threshold_cpu)
 left_child_gpu = cp.asarray(left_child_cpu)
 right_child_gpu = cp.asarray(right_child_cpu)
@@ -906,6 +933,24 @@ def predict_batch_gpu(x: np.ndarray) -> np.ndarray:
     return cp.asnumpy(pred_gpu)
 
 
+def predict_batch_gpu_bins(bins: np.ndarray) -> np.ndarray:
+    bins_gpu = cp.asarray(bins)
+    pred_gpu = cp.empty((bins_gpu.shape[0], N_CLASSES), dtype=cp.float32)
+    blocks_1d = (bins_gpu.shape[0] + THREADS_PER_BLOCK - 1) // THREADS_PER_BLOCK
+    predict_rows_gpu_bins_kernel[blocks_1d, THREADS_PER_BLOCK](
+        bins_gpu,
+        split_feature_gpu,
+        split_bin_gpu,
+        left_child_gpu,
+        right_child_gpu,
+        is_leaf_gpu,
+        leaf_value_gpu,
+        pred_gpu,
+    )
+    cuda.synchronize()
+    return cp.asnumpy(pred_gpu)
+
+
 def predict_batch(x: np.ndarray) -> np.ndarray:
     if PREDICT_METHOD == "gpu":
         return predict_batch_gpu(x)
@@ -921,15 +966,26 @@ evaluation_profile = _start_profile("evaluation") if args.profile else None
 total_count = 0
 total_se = 0.0
 sum_prob = 0.0
-for x_cpu, y_cpu in GaussianClassStreamProvider(**provider_kwargs):
-    pred_cpu = predict_batch(x_cpu)
-    diff = y_cpu - pred_cpu
-    total_se += float(np.sum(diff * diff))
-    total_count += x_cpu.shape[0]
-    sum_prob += float(np.sum(pred_cpu))
+if PREDICT_METHOD == "gpu":
+    for bins_cpu, y_cpu in quantized_train_batches:
+        pred_cpu = predict_batch_gpu_bins(bins_cpu)
+        diff = y_cpu - pred_cpu
+        total_se += float(np.sum(diff * diff))
+        total_count += bins_cpu.shape[0]
+        sum_prob += float(np.sum(pred_cpu))
 
-    if evaluation_profile is not None:
-        _update_profile(evaluation_profile)
+        if evaluation_profile is not None:
+            _update_profile(evaluation_profile)
+else:
+    for x_cpu, y_cpu in GaussianClassStreamProvider(**provider_kwargs):
+        pred_cpu = predict_batch(x_cpu)
+        diff = y_cpu - pred_cpu
+        total_se += float(np.sum(diff * diff))
+        total_count += x_cpu.shape[0]
+        sum_prob += float(np.sum(pred_cpu))
+
+        if evaluation_profile is not None:
+            _update_profile(evaluation_profile)
 
 train_mse = total_se / max(total_count, 1)
 mean_sum_prob = sum_prob / max(total_count, 1)
