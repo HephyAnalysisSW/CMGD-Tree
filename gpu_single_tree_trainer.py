@@ -7,7 +7,7 @@ import cupy as cp
 import numpy as np
 from numba import cuda
 
-from single_tree import Node, Objective, SingleTree
+from single_tree import Node, SingleTree
 from synthetic_provider import GaussianClassStreamProvider
 
 try:
@@ -490,7 +490,7 @@ def print_profile(profile_state: dict):
 
 
 class GpuSingleTreeTrainer:
-    def __init__(self, tree_config: dict, dataset_config: dict, training_config: dict, objective: Objective):
+    def __init__(self, tree_config: dict, dataset_config: dict, training_config: dict, objective):
         self.tree_config = tree_config
         self.dataset_config = dataset_config
         self.training_config = training_config
@@ -904,7 +904,7 @@ class GpuSingleTreeTrainer:
         if self.training_config.get("predict_method") == "gpu":
             for batch in quantized_train_batches:
                 pred_cpu = self.predict_batch(tree, bins=batch[0])
-                error_sum, denominator = self.objective.mse_from_predictions(
+                error_sum, denominator = self.objective.metric_from_predictions(
                     pred_cpu,
                     batch[1],
                     batch[2] if self.objective.use_weights else None,
@@ -919,7 +919,7 @@ class GpuSingleTreeTrainer:
             for x_cpu, y_cpu in GaussianClassStreamProvider(**provider_kwargs):
                 cls_cpu = np.argmax(y_cpu, axis=1)
                 pred_cpu = tree.predict_batch(x_cpu)
-                error_sum, denominator = self.objective.mse_from_predictions(
+                error_sum, denominator = self.objective.metric_from_predictions(
                     pred_cpu,
                     cls_cpu,
                     self.objective.class_weights[cls_cpu] if self.objective.use_weights else None,

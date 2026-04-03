@@ -11,8 +11,35 @@ class Objective:
     class_weights: np.ndarray
     use_weights: bool
 
+    def leaf_value(self, sum_y: np.ndarray, denominator: float, reg_lambda: float) -> np.ndarray:
+        raise NotImplementedError
+
+    def leaf_score(self, sum_y: np.ndarray, denominator: float, reg_lambda: float) -> float:
+        raise NotImplementedError
+
+    def cache_batch(self, bins_cpu: np.ndarray, y_cpu: np.ndarray) -> tuple[np.ndarray, ...]:
+        raise NotImplementedError
+
+    def denominator_from_sum(self, sum_y: np.ndarray, count: int) -> float:
+        raise NotImplementedError
+
+    def metric_from_predictions(
+        self,
+        pred_cpu: np.ndarray,
+        cls_cpu: np.ndarray,
+        sample_weight_cpu: np.ndarray | None = None,
+    ) -> tuple[float, float]:
+        raise NotImplementedError
+
+
+@dataclass
+class MSEObjective(Objective):
+    name: str
+    class_weights: np.ndarray
+    use_weights: bool
+
     @classmethod
-    def from_tree_config(cls, tree_config: dict, n_classes: int) -> "Objective":
+    def from_tree_config(cls, tree_config: dict, n_classes: int) -> "MSEObjective":
         configured = tree_config.get("class_weights")
         if configured is None:
             return cls(name="mse", class_weights=np.ones(n_classes, dtype=np.float32), use_weights=False)
@@ -44,7 +71,7 @@ class Objective:
             return float(np.sum(sum_y))
         return float(count)
 
-    def mse_from_predictions(
+    def metric_from_predictions(
         self,
         pred_cpu: np.ndarray,
         cls_cpu: np.ndarray,

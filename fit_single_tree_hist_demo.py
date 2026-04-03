@@ -5,7 +5,7 @@ import ast
 
 from gpu_single_tree_trainer import GpuSingleTreeTrainer
 from plot_feature_ratios import make_feature_weighted_hist_plots
-from single_tree import Objective
+from single_tree import MSEObjective
 from synthetic_provider import GaussianClassStreamProvider
 
 
@@ -113,7 +113,7 @@ def _parse_args():
 
 
 ARGS = _parse_args()
-OBJECTIVE = Objective.from_tree_config(TREE_CONFIG, DATASET_CONFIG.get("n_classes"))
+OBJECTIVE = MSEObjective.from_tree_config(TREE_CONFIG, DATASET_CONFIG.get("n_classes"))
 TRAINER = GpuSingleTreeTrainer(TREE_CONFIG, DATASET_CONFIG, TRAINING_CONFIG, OBJECTIVE)
 
 
