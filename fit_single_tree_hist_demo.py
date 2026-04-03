@@ -144,6 +144,7 @@ PLOT_TRAINING_ID = TRAINING_CONFIG["plot_training_id"]
 PLOT_BINS = TRAINING_CONFIG["plot_bins"]
 THREADS_PER_BLOCK = TRAINING_CONFIG["threads_per_block"]
 PREDICT_METHOD = TRAINING_CONFIG["predict_method"]
+MAX_CLASS_CAPACITY = 16
 
 if GROW_POLICY not in {"depthwise", "lossguide"}:
     raise ValueError("grow_policy must be 'depthwise' or 'lossguide'.")
@@ -200,9 +201,9 @@ def quantize_batch(x, cuts, bins_out):
 
 @cuda.jit
 def route_rows_to_candidate_slots(
-    x,
+    bins,
     split_feature,
-    split_threshold,
+    split_bin,
     left_child,
     right_child,
     is_leaf,
@@ -210,12 +211,12 @@ def route_rows_to_candidate_slots(
     out_slot,
 ):
     i = cuda.grid(1)
-    if i < x.shape[0]:
+    if i < bins.shape[0]:
         node = 0
         while is_leaf[node] == 0:
             feature = split_feature[node]
-            threshold = split_threshold[node]
-            if x[i, feature] <= threshold:
+            threshold_bin = split_bin[node]
+            if bins[i, feature] <= threshold_bin:
                 node = left_child[node]
             else:
                 node = right_child[node]
@@ -549,6 +550,17 @@ quantile_levels = np.linspace(0.0, 1.0, MAX_BIN + 1, dtype=np.float64)[1:-1]
 cuts_cpu = np.quantile(cut_sample, quantile_levels, axis=0).T.astype(np.float32)
 cuts_gpu = cp.asarray(cuts_cpu)
 
+quantized_train_batches = []
+for x_cpu, y_cpu in GaussianClassStreamProvider(**provider_kwargs):
+    bins_cpu = np.empty((x_cpu.shape[0], x_cpu.shape[1]), dtype=np.uint16)
+    for feature_idx in range(x_cpu.shape[1]):
+        bins_cpu[:, feature_idx] = np.searchsorted(
+            cuts_cpu[feature_idx],
+            x_cpu[:, feature_idx],
+            side="left",
+        )
+    quantized_train_batches.append((bins_cpu, y_cpu.copy()))
+
 
 # -----------------------------------------------------------------------------
 # Tree state.
@@ -588,13 +600,13 @@ while True:
     candidate_slot_of_node_gpu = cp.asarray(candidate_slot_of_node_cpu)
 
     split_feature_cpu = np.array([node.split_feature for node in nodes], dtype=np.int32)
-    split_threshold_cpu = np.array([node.split_threshold for node in nodes], dtype=np.float32)
+    split_bin_cpu = np.array([node.split_bin for node in nodes], dtype=np.int32)
     left_child_cpu = np.array([node.left_child for node in nodes], dtype=np.int32)
     right_child_cpu = np.array([node.right_child for node in nodes], dtype=np.int32)
     is_leaf_cpu = np.array([1 if node.is_leaf else 0 for node in nodes], dtype=np.int8)
 
     split_feature_gpu = cp.asarray(split_feature_cpu)
-    split_threshold_gpu = cp.asarray(split_threshold_cpu)
+    split_bin_gpu = cp.asarray(split_bin_cpu)
     left_child_gpu = cp.asarray(left_child_cpu)
     right_child_gpu = cp.asarray(right_child_cpu)
     is_leaf_gpu = cp.asarray(is_leaf_cpu)
@@ -602,23 +614,16 @@ while True:
     hist_count_gpu = cp.zeros((len(candidate_node_ids), N_FEATURES, MAX_BIN), dtype=cp.int32)
     hist_sum_gpu = cp.zeros((len(candidate_node_ids), N_FEATURES, MAX_BIN, N_CLASSES), dtype=cp.float32)
 
-    for x_cpu, y_cpu in GaussianClassStreamProvider(**provider_kwargs):
-        x_gpu = cp.asarray(x_cpu)
+    for bins_cpu, y_cpu in quantized_train_batches:
+        bins_gpu = cp.asarray(bins_cpu)
         y_gpu = cp.asarray(y_cpu)
 
-        bins_gpu = cp.empty((x_gpu.shape[0], x_gpu.shape[1]), dtype=cp.uint16)
-        blocks_2d = (
-            (x_gpu.shape[0] + THREADS_PER_BLOCK - 1) // THREADS_PER_BLOCK,
-            x_gpu.shape[1],
-        )
-        quantize_batch[blocks_2d, (THREADS_PER_BLOCK, 1)](x_gpu, cuts_gpu, bins_gpu)
-
-        row_slot_gpu = cp.empty((x_gpu.shape[0],), dtype=cp.int32)
-        blocks_1d = (x_gpu.shape[0] + THREADS_PER_BLOCK - 1) // THREADS_PER_BLOCK
+        blocks_1d = (bins_gpu.shape[0] + THREADS_PER_BLOCK - 1) // THREADS_PER_BLOCK
+        row_slot_gpu = cp.empty((bins_gpu.shape[0],), dtype=cp.int32)
         route_rows_to_candidate_slots[blocks_1d, THREADS_PER_BLOCK](
-            x_gpu,
+            bins_gpu,
             split_feature_gpu,
-            split_threshold_gpu,
+            split_bin_gpu,
             left_child_gpu,
             right_child_gpu,
             is_leaf_gpu,
