@@ -36,6 +36,7 @@ TREE_CONFIG = {
     "min_samples_leaf": 512,
     "min_split_loss": 1e-3,
     "reg_lambda": 0.0,
+    "class_weights": None,
 }
 
 DATASET_CONFIG = {
@@ -131,6 +132,7 @@ MAX_LEAVES = TREE_CONFIG["max_leaves"]
 MIN_SAMPLES_LEAF = TREE_CONFIG["min_samples_leaf"]
 MIN_SPLIT_LOSS = TREE_CONFIG["min_split_loss"]
 REG_LAMBDA = TREE_CONFIG["reg_lambda"]
+CLASS_WEIGHTS_CONFIG = TREE_CONFIG["class_weights"]
 
 N_FEATURES = DATASET_CONFIG["n_features"]
 N_CLASSES = DATASET_CONFIG["n_classes"]
@@ -147,12 +149,22 @@ PREDICT_METHOD = TRAINING_CONFIG["predict_method"]
 MAX_CLASS_CAPACITY = 16
 BIN_NP_DTYPE = np.uint8 if MAX_BIN <= 256 else np.uint16
 BIN_CP_DTYPE = cp.uint8 if MAX_BIN <= 256 else cp.uint16
+OBJECTIVE_NAME = "weighted_mse"
 
 if GROW_POLICY not in {"depthwise", "lossguide"}:
     raise ValueError("grow_policy must be 'depthwise' or 'lossguide'.")
 
 if PREDICT_METHOD not in {"cpu", "gpu"}:
     raise ValueError("predict_method must be 'cpu' or 'gpu'.")
+
+if CLASS_WEIGHTS_CONFIG is None:
+    CLASS_WEIGHTS_CPU = np.ones(N_CLASSES, dtype=np.float32)
+else:
+    CLASS_WEIGHTS_CPU = np.asarray(CLASS_WEIGHTS_CONFIG, dtype=np.float32)
+    if CLASS_WEIGHTS_CPU.shape != (N_CLASSES,):
+        raise ValueError("class_weights must have length n_classes.")
+    if np.any(CLASS_WEIGHTS_CPU < 0.0):
+        raise ValueError("class_weights must be non-negative.")
 
 provider_kwargs = dict(
     n_features=N_FEATURES,
@@ -226,16 +238,17 @@ def route_rows_to_candidate_slots(
 
 
 @cuda.jit
-def build_candidate_histograms(bins, y, row_slot, hist_count, hist_sum):
+def build_candidate_histograms(bins, y, sample_weight, row_slot, hist_count, hist_sum):
     i = cuda.grid(1)
     if i < bins.shape[0]:
         slot = row_slot[i]
         if slot >= 0:
+            weight = sample_weight[i]
             for f in range(bins.shape[1]):
                 b = bins[i, f]
                 cuda.atomic.add(hist_count, (slot, f, b), 1)
                 for c in range(y.shape[1]):
-                    cuda.atomic.add(hist_sum, (slot, f, b, c), y[i, c])
+                    cuda.atomic.add(hist_sum, (slot, f, b, c), weight * y[i, c])
 
 
 @cuda.jit
@@ -286,6 +299,7 @@ def evaluate_feature_splits(
         best_right_sum = cuda.local.array(16, dtype=np.float32)
 
         n_classes = hist_sum.shape[3]
+        parent_weight = 0.0
         for c in range(n_classes):
             s = 0.0
             for b in range(hist_sum.shape[2]):
@@ -293,8 +307,9 @@ def evaluate_feature_splits(
             parent_sum[c] = s
             left_sum[c] = 0.0
             parent_score_num += s * s
+            parent_weight += s
 
-        parent_score = parent_score_num / (parent_count + reg_lambda)
+        parent_score = parent_score_num / (parent_weight + reg_lambda)
 
         left_count = 0
         best_gain = -1.0e30
@@ -304,12 +319,17 @@ def evaluate_feature_splits(
 
         for split_bin in range(hist_count.shape[2] - 1):
             left_count += hist_count[slot, feature, split_bin]
-            right_count = parent_count - left_count
 
             for c in range(n_classes):
                 left_sum[c] += hist_sum[slot, feature, split_bin, c]
 
-            if left_count < min_samples_leaf or right_count < min_samples_leaf:
+            right_count = parent_count - left_count
+            left_weight = 0.0
+            for c in range(n_classes):
+                left_weight += left_sum[c]
+            right_weight = parent_weight - left_weight
+
+            if left_count < min_samples_leaf or right_count < min_samples_leaf or left_weight <= 0.0 or right_weight <= 0.0:
                 continue
 
             left_score_num = 0.0
@@ -320,8 +340,8 @@ def evaluate_feature_splits(
                 right_score_num += right_sum_c * right_sum_c
 
             gain = (
-                left_score_num / (left_count + reg_lambda)
-                + right_score_num / (right_count + reg_lambda)
+                left_score_num / (left_weight + reg_lambda)
+                + right_score_num / (right_weight + reg_lambda)
                 - parent_score
             )
 
@@ -436,14 +456,26 @@ def predict_rows_gpu_bins_kernel(
             pred_out[i, c] = leaf_value[node, c]
 
 
-def mse_leaf_value(sum_y: np.ndarray, count: int, reg_lambda: float) -> np.ndarray:
-    return sum_y / (count + reg_lambda)
+def weighted_mse_objective_leaf_value(sum_y: np.ndarray, weight_sum: float, reg_lambda: float) -> np.ndarray:
+    return sum_y / (weight_sum + reg_lambda)
 
 
-def mse_leaf_score(sum_y: np.ndarray, count: int, reg_lambda: float) -> float:
-    if count <= 0:
+def weighted_mse_objective_leaf_score(sum_y: np.ndarray, weight_sum: float, reg_lambda: float) -> float:
+    if weight_sum <= 0:
         return -np.inf
-    return float(np.dot(sum_y, sum_y) / (count + reg_lambda))
+    return float(np.dot(sum_y, sum_y) / (weight_sum + reg_lambda))
+
+
+def objective_leaf_value(sum_y: np.ndarray, weight_sum: float, reg_lambda: float) -> np.ndarray:
+    if OBJECTIVE_NAME == "weighted_mse":
+        return weighted_mse_objective_leaf_value(sum_y, weight_sum, reg_lambda)
+    raise ValueError(f"Unsupported objective '{OBJECTIVE_NAME}'.")
+
+
+def objective_leaf_score(sum_y: np.ndarray, weight_sum: float, reg_lambda: float) -> float:
+    if OBJECTIVE_NAME == "weighted_mse":
+        return weighted_mse_objective_leaf_score(sum_y, weight_sum, reg_lambda)
+    raise ValueError(f"Unsupported objective '{OBJECTIVE_NAME}'.")
 
 
 def _rss_bytes():
@@ -553,6 +585,8 @@ print("GPU:", cuda.get_current_device().name)
 print("Tree config:", TREE_CONFIG)
 print("Dataset config:", DATASET_CONFIG)
 print("Training config:", TRAINING_CONFIG)
+print("Objective:", OBJECTIVE_NAME)
+print("Class weights:", CLASS_WEIGHTS_CPU.tolist())
 print(
     f"Building a single tree with grow_policy={GROW_POLICY}, "
     f"max_depth={MAX_DEPTH}, max_leaves={MAX_LEAVES}, max_bin={MAX_BIN}"
@@ -595,7 +629,8 @@ for x_cpu, y_cpu in GaussianClassStreamProvider(**provider_kwargs):
     quantize_batch[quant_blocks, (16, 16)](cache_x_gpu, cuts_gpu, cache_bins_gpu)
     cuda.synchronize()
     bins_cpu = cp.asnumpy(cache_bins_gpu)
-    quantized_train_batches.append((bins_cpu, y_cpu.copy()))
+    sample_weight_cpu = y_cpu @ CLASS_WEIGHTS_CPU
+    quantized_train_batches.append((bins_cpu, y_cpu.copy(), sample_weight_cpu.astype(np.float32, copy=False)))
     if cache_build_profile is not None:
         _update_profile(cache_build_profile)
 
@@ -611,6 +646,7 @@ nodes: list[Node] = [Node(node_id=0, depth=0)]
 n_leaves = 1
 next_node_id = 1
 root_score = None
+root_weight = None
 
 tree_growth_profile = _start_profile("tree_growth") if args.profile else None
 
@@ -655,9 +691,10 @@ while True:
     hist_count_gpu = cp.zeros((len(candidate_node_ids), N_FEATURES, MAX_BIN), dtype=cp.int32)
     hist_sum_gpu = cp.zeros((len(candidate_node_ids), N_FEATURES, MAX_BIN, N_CLASSES), dtype=cp.float32)
 
-    for bins_cpu, y_cpu in quantized_train_batches:
+    for bins_cpu, y_cpu, sample_weight_cpu in quantized_train_batches:
         bins_gpu = cp.asarray(bins_cpu)
         y_gpu = cp.asarray(y_cpu)
+        sample_weight_gpu = cp.asarray(sample_weight_cpu)
 
         blocks_1d = (bins_gpu.shape[0] + THREADS_PER_BLOCK - 1) // THREADS_PER_BLOCK
         row_slot_gpu = cp.empty((bins_gpu.shape[0],), dtype=cp.int32)
@@ -674,6 +711,7 @@ while True:
         build_candidate_histograms[blocks_1d, THREADS_PER_BLOCK](
             bins_gpu,
             y_gpu,
+            sample_weight_gpu,
             row_slot_gpu,
             hist_count_gpu,
             hist_sum_gpu,
@@ -761,10 +799,12 @@ while True:
         node = nodes[node_id]
         node.count = int(slot_parent_count[slot])
         parent_sum = slot_parent_sum[slot].astype(np.float64)
-        node.value = mse_leaf_value(parent_sum.astype(np.float32), node.count, REG_LAMBDA)
-        parent_score = mse_leaf_score(parent_sum, node.count, REG_LAMBDA)
+        node_weight = float(np.sum(parent_sum))
+        node.value = objective_leaf_value(parent_sum.astype(np.float32), node_weight, REG_LAMBDA)
+        parent_score = objective_leaf_score(parent_sum, node_weight, REG_LAMBDA)
         if root_score is None and node_id == 0:
             root_score = parent_score
+            root_weight = node_weight
 
         node.gain = -np.inf
         node.best_left_value = None
@@ -798,8 +838,8 @@ while True:
         node.split_threshold = float(cuts_cpu[best_feature, best_bin])
         node.best_left_count = best_left_count
         node.best_right_count = best_right_count
-        node.best_left_value = mse_leaf_value(best_left_sum, best_left_count, REG_LAMBDA)
-        node.best_right_value = mse_leaf_value(best_right_sum, best_right_count, REG_LAMBDA)
+        node.best_left_value = objective_leaf_value(best_left_sum, float(np.sum(best_left_sum)), REG_LAMBDA)
+        node.best_right_value = objective_leaf_value(best_right_sum, float(np.sum(best_right_sum)), REG_LAMBDA)
 
         split_plans.append((node.gain, node_id))
 
@@ -971,30 +1011,34 @@ evaluation_profile = _start_profile("evaluation") if args.profile else None
 # Final streamed training MSE and class-probability sanity check.
 # -----------------------------------------------------------------------------
 total_count = 0
-total_se = 0.0
+total_weight = 0.0
+total_weighted_se = 0.0
 sum_prob = 0.0
 if PREDICT_METHOD == "gpu":
-    for bins_cpu, y_cpu in quantized_train_batches:
+    for bins_cpu, y_cpu, sample_weight_cpu in quantized_train_batches:
         pred_cpu = predict_batch_gpu_bins(bins_cpu)
         diff = y_cpu - pred_cpu
-        total_se += float(np.sum(diff * diff))
+        total_weighted_se += float(np.sum(sample_weight_cpu[:, None] * diff * diff))
         total_count += bins_cpu.shape[0]
+        total_weight += float(np.sum(sample_weight_cpu))
         sum_prob += float(np.sum(pred_cpu))
 
         if evaluation_profile is not None:
             _update_profile(evaluation_profile)
 else:
     for x_cpu, y_cpu in GaussianClassStreamProvider(**provider_kwargs):
+        sample_weight_cpu = y_cpu @ CLASS_WEIGHTS_CPU
         pred_cpu = predict_batch(x_cpu)
         diff = y_cpu - pred_cpu
-        total_se += float(np.sum(diff * diff))
+        total_weighted_se += float(np.sum(sample_weight_cpu[:, None] * diff * diff))
         total_count += x_cpu.shape[0]
+        total_weight += float(np.sum(sample_weight_cpu))
         sum_prob += float(np.sum(pred_cpu))
 
         if evaluation_profile is not None:
             _update_profile(evaluation_profile)
 
-train_mse = total_se / max(total_count, 1)
+train_mse = total_weighted_se / max(total_weight, 1.0)
 mean_sum_prob = sum_prob / max(total_count, 1)
 
 if evaluation_profile is not None:
@@ -1003,8 +1047,9 @@ if evaluation_profile is not None:
 
 print()
 print(f"Built tree with {len(nodes)} nodes and {n_leaves} leaves.")
-print(f"Root score proxy: {root_score:.6f}")
-print(f"Final streamed train MSE: {train_mse:.6f}")
+print(f"Root {OBJECTIVE_NAME} score: {root_score:.6f}")
+print(f"Root objective weight: {root_weight:.6f}")
+print(f"Final streamed train weighted MSE: {train_mse:.6f}")
 print(f"Mean sum of class predictions: {mean_sum_prob:.6f}")
 print(f"Prediction method: {PREDICT_METHOD}")
 print()
