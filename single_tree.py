@@ -6,6 +6,13 @@ import numpy as np
 
 
 @dataclass
+class CachedTargetBatch:
+    bins: np.ndarray
+    target_codes: np.ndarray
+    sample_weight: np.ndarray | None = None
+
+
+@dataclass
 class Objective:
     name: str
     class_weights: np.ndarray
@@ -17,16 +24,22 @@ class Objective:
     def leaf_score(self, sum_y: np.ndarray, denominator: float, reg_lambda: float) -> float:
         raise NotImplementedError
 
-    def cache_batch(self, bins_cpu: np.ndarray, y_cpu: np.ndarray) -> tuple[np.ndarray, ...]:
+    def make_training_batch(self, bins_cpu: np.ndarray, y_cpu: np.ndarray) -> CachedTargetBatch:
         raise NotImplementedError
 
-    def denominator_from_sum(self, sum_y: np.ndarray, count: int) -> float:
+    def encode_metric_targets(self, y_cpu: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+
+    def sample_weight_from_target_codes(self, target_codes: np.ndarray) -> np.ndarray | None:
+        raise NotImplementedError
+
+    def denominator_from_stats(self, target_stat_sum: np.ndarray, count: int) -> float:
         raise NotImplementedError
 
     def metric_from_predictions(
         self,
         pred_cpu: np.ndarray,
-        cls_cpu: np.ndarray,
+        target_codes: np.ndarray,
         sample_weight_cpu: np.ndarray | None = None,
     ) -> tuple[float, float]:
         raise NotImplementedError
@@ -59,26 +72,37 @@ class MSEObjective(Objective):
             return -np.inf
         return float(np.dot(sum_y, sum_y) / (denominator + reg_lambda))
 
-    def cache_batch(self, bins_cpu: np.ndarray, y_cpu: np.ndarray) -> tuple[np.ndarray, ...]:
-        cls_cpu = np.argmax(y_cpu, axis=1).astype(np.int16 if y_cpu.shape[1] > 256 else np.uint8, copy=False)
-        if self.use_weights:
-            sample_weight_cpu = self.class_weights[cls_cpu].astype(np.float32, copy=False)
-            return bins_cpu, cls_cpu.copy(), sample_weight_cpu
-        return bins_cpu, cls_cpu.copy()
+    def encode_metric_targets(self, y_cpu: np.ndarray) -> np.ndarray:
+        return np.argmax(y_cpu, axis=1).astype(np.int16 if y_cpu.shape[1] > 256 else np.uint8, copy=False)
 
-    def denominator_from_sum(self, sum_y: np.ndarray, count: int) -> float:
+    def sample_weight_from_target_codes(self, target_codes: np.ndarray) -> np.ndarray | None:
+        if not self.use_weights:
+            return None
+        return self.class_weights[target_codes].astype(np.float32, copy=False)
+
+    def make_training_batch(self, bins_cpu: np.ndarray, y_cpu: np.ndarray) -> CachedTargetBatch:
+        target_codes = self.encode_metric_targets(y_cpu)
         if self.use_weights:
-            return float(np.sum(sum_y))
+            return CachedTargetBatch(
+                bins=bins_cpu,
+                target_codes=target_codes.copy(),
+                sample_weight=self.sample_weight_from_target_codes(target_codes),
+            )
+        return CachedTargetBatch(bins=bins_cpu, target_codes=target_codes.copy())
+
+    def denominator_from_stats(self, target_stat_sum: np.ndarray, count: int) -> float:
+        if self.use_weights:
+            return float(np.sum(target_stat_sum))
         return float(count)
 
     def metric_from_predictions(
         self,
         pred_cpu: np.ndarray,
-        cls_cpu: np.ndarray,
+        target_codes: np.ndarray,
         sample_weight_cpu: np.ndarray | None = None,
     ) -> tuple[float, float]:
         pred_sq = np.sum(pred_cpu * pred_cpu, axis=1)
-        target_prob = pred_cpu[np.arange(pred_cpu.shape[0]), cls_cpu]
+        target_prob = pred_cpu[np.arange(pred_cpu.shape[0]), target_codes]
         per_row = 1.0 - 2.0 * target_prob + pred_sq
         if sample_weight_cpu is None:
             return float(np.sum(per_row)), float(pred_cpu.shape[0])

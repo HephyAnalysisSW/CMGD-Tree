@@ -7,7 +7,7 @@ import cupy as cp
 import numpy as np
 from numba import cuda
 
-from single_tree import Node, SingleTree
+from single_tree import CachedTargetBatch, Node, SingleTree
 from synthetic_provider import GaussianClassStreamProvider
 
 try:
@@ -536,7 +536,7 @@ class GpuSingleTreeTrainer:
         cuts_gpu: cp.ndarray,
         profile: bool,
         training_profile: dict | None,
-    ) -> list[tuple[np.ndarray, ...]]:
+    ) -> list[CachedTargetBatch]:
         cache_profile = _start_profile("cache_build") if profile else None
         cache_x_gpu = None
         cache_bins_gpu = None
@@ -551,7 +551,7 @@ class GpuSingleTreeTrainer:
             quant_blocks = ((cache_x_gpu.shape[0] + 15) // 16, (cache_x_gpu.shape[1] + 15) // 16)
             quantize_batch[quant_blocks, (16, 16)](cache_x_gpu, cuts_gpu, cache_bins_gpu)
             cuda.synchronize()
-            quantized_train_batches.append(self.objective.cache_batch(cp.asnumpy(cache_bins_gpu), y_cpu))
+            quantized_train_batches.append(self.objective.make_training_batch(cp.asnumpy(cache_bins_gpu), y_cpu))
             if cache_profile is not None:
                 _update_profile(cache_profile)
             if training_profile is not None:
@@ -608,7 +608,7 @@ class GpuSingleTreeTrainer:
     def fit(
         self,
         tree: SingleTree,
-        quantized_train_batches: list[tuple[np.ndarray, ...]],
+        quantized_train_batches: list[CachedTargetBatch],
         cuts_cpu: np.ndarray,
         profile: bool,
         training_profile: dict | None,
@@ -647,8 +647,8 @@ class GpuSingleTreeTrainer:
 
             threads_per_block = self.training_config.get("threads_per_block")
             for batch in quantized_train_batches:
-                bins_gpu = cp.asarray(batch[0])
-                cls_gpu = cp.asarray(batch[1])
+                bins_gpu = cp.asarray(batch.bins)
+                target_codes_gpu = cp.asarray(batch.target_codes)
                 blocks_1d = (bins_gpu.shape[0] + threads_per_block - 1) // threads_per_block
                 row_slot_gpu = cp.empty((bins_gpu.shape[0],), dtype=cp.int32)
                 route_rows_to_candidate_slots[blocks_1d, threads_per_block](
@@ -664,8 +664,8 @@ class GpuSingleTreeTrainer:
                 if self.objective.use_weights:
                     build_candidate_histograms_weighted[blocks_1d, threads_per_block](
                         bins_gpu,
-                        cls_gpu,
-                        cp.asarray(batch[2]),
+                        target_codes_gpu,
+                        cp.asarray(batch.sample_weight),
                         row_slot_gpu,
                         hist_count_gpu,
                         hist_sum_gpu,
@@ -673,7 +673,7 @@ class GpuSingleTreeTrainer:
                 else:
                     build_candidate_histograms_unweighted[blocks_1d, threads_per_block](
                         bins_gpu,
-                        cls_gpu,
+                        target_codes_gpu,
                         row_slot_gpu,
                         hist_count_gpu,
                         hist_sum_gpu,
@@ -777,7 +777,7 @@ class GpuSingleTreeTrainer:
                 node = tree.nodes[node_id]
                 node.count = int(slot_parent_count[slot])
                 parent_sum = slot_parent_sum[slot].astype(np.float64)
-                node_denominator = self.objective.denominator_from_sum(parent_sum, node.count)
+                node_denominator = self.objective.denominator_from_stats(parent_sum, node.count)
                 node.value = self.objective.leaf_value(parent_sum.astype(np.float32), node_denominator, self.tree_config.get("reg_lambda"))
                 parent_score = self.objective.leaf_score(parent_sum, node_denominator, self.tree_config.get("reg_lambda"))
                 if tree.root_score is None and node_id == 0:
@@ -816,12 +816,12 @@ class GpuSingleTreeTrainer:
                 node.best_right_count = best_right_count
                 node.best_left_value = self.objective.leaf_value(
                     best_left_sum,
-                    self.objective.denominator_from_sum(best_left_sum.astype(np.float64), best_left_count),
+                    self.objective.denominator_from_stats(best_left_sum.astype(np.float64), best_left_count),
                     self.tree_config.get("reg_lambda"),
                 )
                 node.best_right_value = self.objective.leaf_value(
                     best_right_sum,
-                    self.objective.denominator_from_sum(best_right_sum.astype(np.float64), best_right_count),
+                    self.objective.denominator_from_stats(best_right_sum.astype(np.float64), best_right_count),
                     self.tree_config.get("reg_lambda"),
                 )
                 split_plans.append((node.gain, node_id))
@@ -891,7 +891,7 @@ class GpuSingleTreeTrainer:
     def evaluate_cached_training_stream(
         self,
         tree: SingleTree,
-        quantized_train_batches: list[tuple[np.ndarray, ...]],
+        quantized_train_batches: list[CachedTargetBatch],
         provider_kwargs: dict,
         profile: bool,
     ) -> tuple[float, float]:
@@ -903,13 +903,13 @@ class GpuSingleTreeTrainer:
 
         if self.training_config.get("predict_method") == "gpu":
             for batch in quantized_train_batches:
-                pred_cpu = self.predict_batch(tree, bins=batch[0])
+                pred_cpu = self.predict_batch(tree, bins=batch.bins)
                 error_sum, denominator = self.objective.metric_from_predictions(
                     pred_cpu,
-                    batch[1],
-                    batch[2] if self.objective.use_weights else None,
+                    batch.target_codes,
+                    batch.sample_weight if self.objective.use_weights else None,
                 )
-                total_count += batch[0].shape[0]
+                total_count += batch.bins.shape[0]
                 total_error += error_sum
                 total_denominator += denominator
                 sum_prob += float(np.sum(pred_cpu))
@@ -917,12 +917,12 @@ class GpuSingleTreeTrainer:
                     _update_profile(evaluation_profile)
         else:
             for x_cpu, y_cpu in GaussianClassStreamProvider(**provider_kwargs):
-                cls_cpu = np.argmax(y_cpu, axis=1)
+                target_codes = self.objective.encode_metric_targets(y_cpu)
                 pred_cpu = tree.predict_batch(x_cpu)
                 error_sum, denominator = self.objective.metric_from_predictions(
                     pred_cpu,
-                    cls_cpu,
-                    self.objective.class_weights[cls_cpu] if self.objective.use_weights else None,
+                    target_codes,
+                    self.objective.sample_weight_from_target_codes(target_codes),
                 )
                 total_count += x_cpu.shape[0]
                 total_error += error_sum
