@@ -14,6 +14,7 @@ class CachedTargetBatch:
 
 @dataclass
 class Objective:
+    kind: str
     name: str
     class_weights: np.ndarray
     use_weights: bool
@@ -47,22 +48,18 @@ class Objective:
 
 @dataclass
 class MSEObjective(Objective):
-    name: str
-    class_weights: np.ndarray
-    use_weights: bool
-
     @classmethod
     def from_tree_config(cls, tree_config: dict, n_classes: int) -> "MSEObjective":
         configured = tree_config.get("class_weights")
         if configured is None:
-            return cls(name="mse", class_weights=np.ones(n_classes, dtype=np.float32), use_weights=False)
+            return cls(kind="mse", name="mse", class_weights=np.ones(n_classes, dtype=np.float32), use_weights=False)
 
         class_weights = np.asarray(configured, dtype=np.float32)
         if class_weights.shape != (n_classes,):
             raise ValueError("class_weights must have length n_classes.")
         if np.any(class_weights < 0.0):
             raise ValueError("class_weights must be non-negative.")
-        return cls(name="weighted_mse", class_weights=class_weights, use_weights=True)
+        return cls(kind="mse", name="weighted_mse", class_weights=class_weights, use_weights=True)
 
     def leaf_value(self, sum_y: np.ndarray, denominator: float, reg_lambda: float) -> np.ndarray:
         return sum_y / (denominator + reg_lambda)
@@ -107,6 +104,86 @@ class MSEObjective(Objective):
         if sample_weight_cpu is None:
             return float(np.sum(per_row)), float(pred_cpu.shape[0])
         return float(np.sum(sample_weight_cpu * per_row)), float(np.sum(sample_weight_cpu))
+
+
+@dataclass
+class CrossEntropyObjective(Objective):
+    @classmethod
+    def from_tree_config(cls, tree_config: dict, n_classes: int) -> "CrossEntropyObjective":
+        configured = tree_config.get("class_weights")
+        if configured is None:
+            return cls(
+                kind="cross_entropy",
+                name="cross_entropy",
+                class_weights=np.ones(n_classes, dtype=np.float32),
+                use_weights=False,
+            )
+
+        class_weights = np.asarray(configured, dtype=np.float32)
+        if class_weights.shape != (n_classes,):
+            raise ValueError("class_weights must have length n_classes.")
+        if np.any(class_weights < 0.0):
+            raise ValueError("class_weights must be non-negative.")
+        return cls(
+            kind="cross_entropy",
+            name="weighted_cross_entropy",
+            class_weights=class_weights,
+            use_weights=True,
+        )
+
+    def leaf_value(self, sum_y: np.ndarray, denominator: float, reg_lambda: float) -> np.ndarray:
+        if denominator <= 0.0:
+            return np.zeros_like(sum_y, dtype=np.float32)
+        return sum_y / denominator
+
+    def leaf_score(self, sum_y: np.ndarray, denominator: float, reg_lambda: float) -> float:
+        if denominator <= 0.0:
+            return -np.inf
+        positive = sum_y > 0.0
+        return float(np.sum(sum_y[positive] * np.log(sum_y[positive])) - denominator * np.log(denominator))
+
+    def encode_metric_targets(self, y_cpu: np.ndarray) -> np.ndarray:
+        return np.argmax(y_cpu, axis=1).astype(np.int16 if y_cpu.shape[1] > 256 else np.uint8, copy=False)
+
+    def sample_weight_from_target_codes(self, target_codes: np.ndarray) -> np.ndarray | None:
+        if not self.use_weights:
+            return None
+        return self.class_weights[target_codes].astype(np.float32, copy=False)
+
+    def make_training_batch(self, bins_cpu: np.ndarray, y_cpu: np.ndarray) -> CachedTargetBatch:
+        target_codes = self.encode_metric_targets(y_cpu)
+        if self.use_weights:
+            return CachedTargetBatch(
+                bins=bins_cpu,
+                target_codes=target_codes.copy(),
+                sample_weight=self.sample_weight_from_target_codes(target_codes),
+            )
+        return CachedTargetBatch(bins=bins_cpu, target_codes=target_codes.copy())
+
+    def denominator_from_stats(self, target_stat_sum: np.ndarray, count: int) -> float:
+        return float(np.sum(target_stat_sum))
+
+    def metric_from_predictions(
+        self,
+        pred_cpu: np.ndarray,
+        target_codes: np.ndarray,
+        sample_weight_cpu: np.ndarray | None = None,
+    ) -> tuple[float, float]:
+        eps = 1.0e-12
+        target_prob = np.clip(pred_cpu[np.arange(pred_cpu.shape[0]), target_codes], eps, 1.0)
+        per_row = -np.log(target_prob)
+        if sample_weight_cpu is None:
+            return float(np.sum(per_row)), float(pred_cpu.shape[0])
+        return float(np.sum(sample_weight_cpu * per_row)), float(np.sum(sample_weight_cpu))
+
+
+def objective_from_tree_config(tree_config: dict, n_classes: int) -> Objective:
+    objective_name = tree_config.get("objective", "mse")
+    if objective_name == "mse":
+        return MSEObjective.from_tree_config(tree_config, n_classes)
+    if objective_name == "cross_entropy":
+        return CrossEntropyObjective.from_tree_config(tree_config, n_classes)
+    raise ValueError("objective must be 'mse' or 'cross_entropy'.")
 
 
 @dataclass

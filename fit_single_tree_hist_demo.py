@@ -5,7 +5,7 @@ import ast
 
 from gpu_single_tree_trainer import GpuSingleTreeTrainer
 from plot_feature_ratios import make_feature_weighted_hist_plots
-from single_tree import MSEObjective
+from single_tree import objective_from_tree_config
 from synthetic_provider import GaussianClassStreamProvider
 
 
@@ -18,6 +18,7 @@ TREE_CONFIG = {
     "min_samples_leaf": 512,
     "min_split_loss": 1e-3,
     "reg_lambda": 0.0,
+    "objective": "mse",
     "class_weights": None,
 }
 
@@ -107,13 +108,15 @@ def _parse_args():
 
     if TREE_CONFIG.get("grow_policy") not in {"depthwise", "lossguide"}:
         raise ValueError("grow_policy must be 'depthwise' or 'lossguide'.")
+    if TREE_CONFIG.get("objective") not in {"mse", "cross_entropy"}:
+        raise ValueError("objective must be 'mse' or 'cross_entropy'.")
     if TRAINING_CONFIG.get("predict_method") not in {"cpu", "gpu"}:
         raise ValueError("predict_method must be 'cpu' or 'gpu'.")
     return args
 
 
 ARGS = _parse_args()
-OBJECTIVE = MSEObjective.from_tree_config(TREE_CONFIG, DATASET_CONFIG.get("n_classes"))
+OBJECTIVE = objective_from_tree_config(TREE_CONFIG, DATASET_CONFIG.get("n_classes"))
 TRAINER = GpuSingleTreeTrainer(TREE_CONFIG, DATASET_CONFIG, TRAINING_CONFIG, OBJECTIVE)
 
 
@@ -130,15 +133,21 @@ def main():
         f"max_bin={TREE_CONFIG.get('max_bin')}"
     )
 
-    trained_tree, provider_kwargs, train_mse, mean_sum_prob = TRAINER.run(profile=ARGS.profile)
+    trained_tree, provider_kwargs, train_metric, mean_sum_prob = TRAINER.run(profile=ARGS.profile)
     print()
     print(f"Built tree with {len(trained_tree.nodes)} nodes and {trained_tree.n_leaves} leaves.")
     print(f"Root {OBJECTIVE.name} score: {trained_tree.root_score:.6f}")
     print(f"Root objective weight: {trained_tree.root_weight:.6f}")
-    if OBJECTIVE.use_weights:
-        print(f"Final streamed train weighted MSE: {train_mse:.6f}")
+    if OBJECTIVE.kind == "mse":
+        if OBJECTIVE.use_weights:
+            print(f"Final streamed train weighted MSE: {train_metric:.6f}")
+        else:
+            print(f"Final streamed train MSE: {train_metric:.6f}")
     else:
-        print(f"Final streamed train MSE: {train_mse:.6f}")
+        if OBJECTIVE.use_weights:
+            print(f"Final streamed train weighted cross-entropy: {train_metric:.6f}")
+        else:
+            print(f"Final streamed train cross-entropy: {train_metric:.6f}")
     print(f"Mean sum of class predictions: {mean_sum_prob:.6f}")
     print(f"Prediction method: {TRAINING_CONFIG.get('predict_method')}")
     return trained_tree, provider_kwargs

@@ -300,6 +300,219 @@ def evaluate_feature_splits_weighted(
 
 
 @cuda.jit
+def evaluate_feature_splits_cross_entropy_unweighted(
+    hist_count,
+    hist_sum,
+    min_samples_leaf,
+    reg_lambda,
+    slot_parent_count,
+    slot_parent_sum,
+    feature_best_gain,
+    feature_best_bin,
+    feature_best_left_count,
+    feature_best_right_count,
+    feature_best_left_sum,
+    feature_best_right_sum,
+):
+    slot, feature = cuda.grid(2)
+    if slot < hist_count.shape[0] and feature < hist_count.shape[1]:
+        parent_count = 0
+        for b in range(hist_count.shape[2]):
+            parent_count += hist_count[slot, feature, b]
+
+        if feature == 0:
+            slot_parent_count[slot] = parent_count
+            for c in range(hist_sum.shape[3]):
+                s = 0.0
+                for b in range(hist_sum.shape[2]):
+                    s += hist_sum[slot, feature, b, c]
+                slot_parent_sum[slot, c] = s
+
+        if parent_count <= 0:
+            feature_best_gain[slot, feature] = -1.0e30
+            feature_best_bin[slot, feature] = -1
+            feature_best_left_count[slot, feature] = 0
+            feature_best_right_count[slot, feature] = 0
+            for c in range(hist_sum.shape[3]):
+                feature_best_left_sum[slot, feature, c] = 0.0
+                feature_best_right_sum[slot, feature, c] = 0.0
+            return
+
+        parent_sum = cuda.local.array(16, dtype=np.float32)
+        left_sum = cuda.local.array(16, dtype=np.float32)
+        best_left_sum = cuda.local.array(16, dtype=np.float32)
+        best_right_sum = cuda.local.array(16, dtype=np.float32)
+        parent_score = -float(parent_count) * np.log(float(parent_count))
+        for c in range(hist_sum.shape[3]):
+            s = 0.0
+            for b in range(hist_sum.shape[2]):
+                s += hist_sum[slot, feature, b, c]
+            parent_sum[c] = s
+            left_sum[c] = 0.0
+            if s > 0.0:
+                parent_score += s * np.log(s)
+
+        left_count = 0
+        best_gain = -1.0e30
+        best_bin = -1
+        best_left_count = 0
+        best_right_count = 0
+
+        for split_bin in range(hist_count.shape[2] - 1):
+            left_count += hist_count[slot, feature, split_bin]
+            right_count = parent_count - left_count
+
+            for c in range(hist_sum.shape[3]):
+                left_sum[c] += hist_sum[slot, feature, split_bin, c]
+
+            if left_count < min_samples_leaf or right_count < min_samples_leaf:
+                continue
+
+            left_score = -float(left_count) * np.log(float(left_count))
+            right_score = -float(right_count) * np.log(float(right_count))
+            for c in range(hist_sum.shape[3]):
+                right_sum_c = parent_sum[c] - left_sum[c]
+                if left_sum[c] > 0.0:
+                    left_score += left_sum[c] * np.log(left_sum[c])
+                if right_sum_c > 0.0:
+                    right_score += right_sum_c * np.log(right_sum_c)
+
+            gain = left_score + right_score - parent_score
+            if gain > best_gain:
+                best_gain = gain
+                best_bin = split_bin
+                best_left_count = left_count
+                best_right_count = right_count
+                for c in range(hist_sum.shape[3]):
+                    best_left_sum[c] = left_sum[c]
+                    best_right_sum[c] = parent_sum[c] - left_sum[c]
+
+        feature_best_gain[slot, feature] = best_gain
+        feature_best_bin[slot, feature] = best_bin
+        feature_best_left_count[slot, feature] = best_left_count
+        feature_best_right_count[slot, feature] = best_right_count
+        for c in range(hist_sum.shape[3]):
+            feature_best_left_sum[slot, feature, c] = best_left_sum[c]
+            feature_best_right_sum[slot, feature, c] = best_right_sum[c]
+
+
+@cuda.jit
+def evaluate_feature_splits_cross_entropy_weighted(
+    hist_count,
+    hist_sum,
+    min_samples_leaf,
+    reg_lambda,
+    slot_parent_count,
+    slot_parent_sum,
+    feature_best_gain,
+    feature_best_bin,
+    feature_best_left_count,
+    feature_best_right_count,
+    feature_best_left_sum,
+    feature_best_right_sum,
+):
+    slot, feature = cuda.grid(2)
+    if slot < hist_count.shape[0] and feature < hist_count.shape[1]:
+        parent_count = 0
+        for b in range(hist_count.shape[2]):
+            parent_count += hist_count[slot, feature, b]
+
+        if feature == 0:
+            slot_parent_count[slot] = parent_count
+            for c in range(hist_sum.shape[3]):
+                s = 0.0
+                for b in range(hist_sum.shape[2]):
+                    s += hist_sum[slot, feature, b, c]
+                slot_parent_sum[slot, c] = s
+
+        if parent_count <= 0:
+            feature_best_gain[slot, feature] = -1.0e30
+            feature_best_bin[slot, feature] = -1
+            feature_best_left_count[slot, feature] = 0
+            feature_best_right_count[slot, feature] = 0
+            for c in range(hist_sum.shape[3]):
+                feature_best_left_sum[slot, feature, c] = 0.0
+                feature_best_right_sum[slot, feature, c] = 0.0
+            return
+
+        parent_sum = cuda.local.array(16, dtype=np.float32)
+        left_sum = cuda.local.array(16, dtype=np.float32)
+        best_left_sum = cuda.local.array(16, dtype=np.float32)
+        best_right_sum = cuda.local.array(16, dtype=np.float32)
+        parent_weight = 0.0
+        for c in range(hist_sum.shape[3]):
+            s = 0.0
+            for b in range(hist_sum.shape[2]):
+                s += hist_sum[slot, feature, b, c]
+            parent_sum[c] = s
+            left_sum[c] = 0.0
+            parent_weight += s
+
+        if parent_weight <= 0.0:
+            feature_best_gain[slot, feature] = -1.0e30
+            feature_best_bin[slot, feature] = -1
+            feature_best_left_count[slot, feature] = 0
+            feature_best_right_count[slot, feature] = 0
+            for c in range(hist_sum.shape[3]):
+                feature_best_left_sum[slot, feature, c] = 0.0
+                feature_best_right_sum[slot, feature, c] = 0.0
+            return
+
+        parent_score = -parent_weight * np.log(parent_weight)
+        for c in range(hist_sum.shape[3]):
+            if parent_sum[c] > 0.0:
+                parent_score += parent_sum[c] * np.log(parent_sum[c])
+
+        left_count = 0
+        best_gain = -1.0e30
+        best_bin = -1
+        best_left_count = 0
+        best_right_count = 0
+
+        for split_bin in range(hist_count.shape[2] - 1):
+            left_count += hist_count[slot, feature, split_bin]
+            right_count = parent_count - left_count
+
+            for c in range(hist_sum.shape[3]):
+                left_sum[c] += hist_sum[slot, feature, split_bin, c]
+
+            left_weight = 0.0
+            for c in range(hist_sum.shape[3]):
+                left_weight += left_sum[c]
+            right_weight = parent_weight - left_weight
+
+            if left_count < min_samples_leaf or right_count < min_samples_leaf or left_weight <= 0.0 or right_weight <= 0.0:
+                continue
+
+            left_score = -left_weight * np.log(left_weight)
+            right_score = -right_weight * np.log(right_weight)
+            for c in range(hist_sum.shape[3]):
+                right_sum_c = parent_sum[c] - left_sum[c]
+                if left_sum[c] > 0.0:
+                    left_score += left_sum[c] * np.log(left_sum[c])
+                if right_sum_c > 0.0:
+                    right_score += right_sum_c * np.log(right_sum_c)
+
+            gain = left_score + right_score - parent_score
+            if gain > best_gain:
+                best_gain = gain
+                best_bin = split_bin
+                best_left_count = left_count
+                best_right_count = right_count
+                for c in range(hist_sum.shape[3]):
+                    best_left_sum[c] = left_sum[c]
+                    best_right_sum[c] = parent_sum[c] - left_sum[c]
+
+        feature_best_gain[slot, feature] = best_gain
+        feature_best_bin[slot, feature] = best_bin
+        feature_best_left_count[slot, feature] = best_left_count
+        feature_best_right_count[slot, feature] = best_right_count
+        for c in range(hist_sum.shape[3]):
+            feature_best_left_sum[slot, feature, c] = best_left_sum[c]
+            feature_best_right_sum[slot, feature, c] = best_right_sum[c]
+
+
+@cuda.jit
 def reduce_feature_bests(
     feature_best_gain,
     feature_best_bin,
@@ -700,36 +913,68 @@ class GpuSingleTreeTrainer:
             )
 
             eval_blocks = ((n_slots + 7) // 8, (self.dataset_config.get("n_features") + 7) // 8)
-            if self.objective.use_weights:
-                evaluate_feature_splits_weighted[eval_blocks, (8, 8)](
-                    hist_count_gpu,
-                    hist_sum_gpu,
-                    self.tree_config.get("min_samples_leaf"),
-                    self.tree_config.get("reg_lambda"),
-                    slot_parent_count_gpu,
-                    slot_parent_sum_gpu,
-                    feature_best_gain_gpu,
-                    feature_best_bin_gpu,
-                    feature_best_left_count_gpu,
-                    feature_best_right_count_gpu,
-                    feature_best_left_sum_gpu,
-                    feature_best_right_sum_gpu,
-                )
+            if self.objective.kind == "mse":
+                if self.objective.use_weights:
+                    evaluate_feature_splits_weighted[eval_blocks, (8, 8)](
+                        hist_count_gpu,
+                        hist_sum_gpu,
+                        self.tree_config.get("min_samples_leaf"),
+                        self.tree_config.get("reg_lambda"),
+                        slot_parent_count_gpu,
+                        slot_parent_sum_gpu,
+                        feature_best_gain_gpu,
+                        feature_best_bin_gpu,
+                        feature_best_left_count_gpu,
+                        feature_best_right_count_gpu,
+                        feature_best_left_sum_gpu,
+                        feature_best_right_sum_gpu,
+                    )
+                else:
+                    evaluate_feature_splits_unweighted[eval_blocks, (8, 8)](
+                        hist_count_gpu,
+                        hist_sum_gpu,
+                        self.tree_config.get("min_samples_leaf"),
+                        self.tree_config.get("reg_lambda"),
+                        slot_parent_count_gpu,
+                        slot_parent_sum_gpu,
+                        feature_best_gain_gpu,
+                        feature_best_bin_gpu,
+                        feature_best_left_count_gpu,
+                        feature_best_right_count_gpu,
+                        feature_best_left_sum_gpu,
+                        feature_best_right_sum_gpu,
+                    )
             else:
-                evaluate_feature_splits_unweighted[eval_blocks, (8, 8)](
-                    hist_count_gpu,
-                    hist_sum_gpu,
-                    self.tree_config.get("min_samples_leaf"),
-                    self.tree_config.get("reg_lambda"),
-                    slot_parent_count_gpu,
-                    slot_parent_sum_gpu,
-                    feature_best_gain_gpu,
-                    feature_best_bin_gpu,
-                    feature_best_left_count_gpu,
-                    feature_best_right_count_gpu,
-                    feature_best_left_sum_gpu,
-                    feature_best_right_sum_gpu,
-                )
+                if self.objective.use_weights:
+                    evaluate_feature_splits_cross_entropy_weighted[eval_blocks, (8, 8)](
+                        hist_count_gpu,
+                        hist_sum_gpu,
+                        self.tree_config.get("min_samples_leaf"),
+                        self.tree_config.get("reg_lambda"),
+                        slot_parent_count_gpu,
+                        slot_parent_sum_gpu,
+                        feature_best_gain_gpu,
+                        feature_best_bin_gpu,
+                        feature_best_left_count_gpu,
+                        feature_best_right_count_gpu,
+                        feature_best_left_sum_gpu,
+                        feature_best_right_sum_gpu,
+                    )
+                else:
+                    evaluate_feature_splits_cross_entropy_unweighted[eval_blocks, (8, 8)](
+                        hist_count_gpu,
+                        hist_sum_gpu,
+                        self.tree_config.get("min_samples_leaf"),
+                        self.tree_config.get("reg_lambda"),
+                        slot_parent_count_gpu,
+                        slot_parent_sum_gpu,
+                        feature_best_gain_gpu,
+                        feature_best_bin_gpu,
+                        feature_best_left_count_gpu,
+                        feature_best_right_count_gpu,
+                        feature_best_left_sum_gpu,
+                        feature_best_right_sum_gpu,
+                    )
 
             slot_best_gain_gpu = cp.full((n_slots,), -1.0e30, dtype=cp.float32)
             slot_best_feature_gpu = cp.full((n_slots,), -1, dtype=cp.int32)
