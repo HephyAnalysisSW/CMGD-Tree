@@ -109,6 +109,7 @@ class GaussianClassStreamProvider:
     def __post_init__(self) -> None:
         self._rng = np.random.default_rng(self.seed)
         self._class_means = np.zeros((self.n_classes, self.n_features), dtype=self.dtype)
+        self._class_targets = np.eye(self.n_classes, dtype=self.dtype)
 
         if self.n_features == 1 and self.n_classes == 2:
             self._class_means[0, 0] = 0.0
@@ -129,13 +130,13 @@ class GaussianClassStreamProvider:
         cls = self._rng.integers(0, self.n_classes, size=self.batch_size, endpoint=False)
 
         x = self._rng.normal(
-            loc=self._class_means[cls],
+            loc=0.0,
             scale=self.feature_noise,
             size=(self.batch_size, self.n_features),
         ).astype(self.dtype)
+        x += self._class_means[cls]
 
-        y = np.zeros((self.batch_size, self.n_classes), dtype=self.dtype)
-        y[np.arange(self.batch_size), cls] = 1.0
+        y = self._class_targets[cls]
         return x, y
 
     @property
