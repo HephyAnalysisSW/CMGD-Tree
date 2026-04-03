@@ -241,30 +241,30 @@ def route_rows_to_candidate_slots(
 
 
 @cuda.jit
-def build_candidate_histograms(bins, y, sample_weight, row_slot, hist_count, hist_sum):
+def build_candidate_histograms(bins, cls, sample_weight, row_slot, hist_count, hist_sum):
     i = cuda.grid(1)
     if i < bins.shape[0]:
         slot = row_slot[i]
         if slot >= 0:
             weight = sample_weight[i]
+            cls_i = cls[i]
             for f in range(bins.shape[1]):
                 b = bins[i, f]
                 cuda.atomic.add(hist_count, (slot, f, b), 1)
-                for c in range(y.shape[1]):
-                    cuda.atomic.add(hist_sum, (slot, f, b, c), weight * y[i, c])
+                cuda.atomic.add(hist_sum, (slot, f, b, cls_i), weight)
 
 
 @cuda.jit
-def build_candidate_histograms_unweighted(bins, y, row_slot, hist_count, hist_sum):
+def build_candidate_histograms_unweighted(bins, cls, row_slot, hist_count, hist_sum):
     i = cuda.grid(1)
     if i < bins.shape[0]:
         slot = row_slot[i]
         if slot >= 0:
+            cls_i = cls[i]
             for f in range(bins.shape[1]):
                 b = bins[i, f]
                 cuda.atomic.add(hist_count, (slot, f, b), 1)
-                for c in range(y.shape[1]):
-                    cuda.atomic.add(hist_sum, (slot, f, b, c), y[i, c])
+                cuda.atomic.add(hist_sum, (slot, f, b, cls_i), 1.0)
 
 
 @cuda.jit
@@ -764,11 +764,12 @@ for x_cpu, y_cpu in GaussianClassStreamProvider(**provider_kwargs):
     quantize_batch[quant_blocks, (16, 16)](cache_x_gpu, cuts_gpu, cache_bins_gpu)
     cuda.synchronize()
     bins_cpu = cp.asnumpy(cache_bins_gpu)
+    cls_cpu = np.argmax(y_cpu, axis=1).astype(np.int16 if N_CLASSES > 256 else np.uint8, copy=False)
     if USE_WEIGHTED_OBJECTIVE:
-        sample_weight_cpu = y_cpu @ CLASS_WEIGHTS_CPU
-        quantized_train_batches.append((bins_cpu, y_cpu.copy(), sample_weight_cpu.astype(np.float32, copy=False)))
+        sample_weight_cpu = CLASS_WEIGHTS_CPU[cls_cpu]
+        quantized_train_batches.append((bins_cpu, cls_cpu.copy(), sample_weight_cpu.astype(np.float32, copy=False)))
     else:
-        quantized_train_batches.append((bins_cpu, y_cpu.copy()))
+        quantized_train_batches.append((bins_cpu, cls_cpu.copy()))
     if cache_build_profile is not None:
         _update_profile(cache_build_profile)
 
@@ -831,9 +832,9 @@ while True:
 
     for batch in quantized_train_batches:
         bins_cpu = batch[0]
-        y_cpu = batch[1]
+        cls_cpu = batch[1]
         bins_gpu = cp.asarray(bins_cpu)
-        y_gpu = cp.asarray(y_cpu)
+        cls_gpu = cp.asarray(cls_cpu)
 
         blocks_1d = (bins_gpu.shape[0] + THREADS_PER_BLOCK - 1) // THREADS_PER_BLOCK
         row_slot_gpu = cp.empty((bins_gpu.shape[0],), dtype=cp.int32)
@@ -851,7 +852,7 @@ while True:
             sample_weight_gpu = cp.asarray(batch[2])
             build_candidate_histograms[blocks_1d, THREADS_PER_BLOCK](
                 bins_gpu,
-                y_gpu,
+                cls_gpu,
                 sample_weight_gpu,
                 row_slot_gpu,
                 hist_count_gpu,
@@ -860,7 +861,7 @@ while True:
         else:
             build_candidate_histograms_unweighted[blocks_1d, THREADS_PER_BLOCK](
                 bins_gpu,
-                y_gpu,
+                cls_gpu,
                 row_slot_gpu,
                 hist_count_gpu,
                 hist_sum_gpu,
@@ -1190,16 +1191,17 @@ sum_prob = 0.0
 if PREDICT_METHOD == "gpu":
     for batch in quantized_train_batches:
         bins_cpu = batch[0]
-        y_cpu = batch[1]
+        cls_cpu = batch[1]
         pred_cpu = predict_batch_gpu_bins(bins_cpu)
-        diff = y_cpu - pred_cpu
         total_count += bins_cpu.shape[0]
+        pred_sq = np.sum(pred_cpu * pred_cpu, axis=1)
+        target_prob = pred_cpu[np.arange(pred_cpu.shape[0]), cls_cpu]
         if USE_WEIGHTED_OBJECTIVE:
             sample_weight_cpu = batch[2]
-            total_weighted_se += float(np.sum(sample_weight_cpu[:, None] * diff * diff))
+            total_weighted_se += float(np.sum(sample_weight_cpu * (1.0 - 2.0 * target_prob + pred_sq)))
             total_weight += float(np.sum(sample_weight_cpu))
         else:
-            total_weighted_se += float(np.sum(diff * diff))
+            total_weighted_se += float(np.sum(1.0 - 2.0 * target_prob + pred_sq))
             total_weight += bins_cpu.shape[0]
         sum_prob += float(np.sum(pred_cpu))
 
@@ -1207,15 +1209,17 @@ if PREDICT_METHOD == "gpu":
             _update_profile(evaluation_profile)
 else:
     for x_cpu, y_cpu in GaussianClassStreamProvider(**provider_kwargs):
+        cls_cpu = np.argmax(y_cpu, axis=1)
         pred_cpu = predict_batch(x_cpu)
-        diff = y_cpu - pred_cpu
         total_count += x_cpu.shape[0]
+        pred_sq = np.sum(pred_cpu * pred_cpu, axis=1)
+        target_prob = pred_cpu[np.arange(pred_cpu.shape[0]), cls_cpu]
         if USE_WEIGHTED_OBJECTIVE:
-            sample_weight_cpu = y_cpu @ CLASS_WEIGHTS_CPU
-            total_weighted_se += float(np.sum(sample_weight_cpu[:, None] * diff * diff))
+            sample_weight_cpu = CLASS_WEIGHTS_CPU[cls_cpu]
+            total_weighted_se += float(np.sum(sample_weight_cpu * (1.0 - 2.0 * target_prob + pred_sq)))
             total_weight += float(np.sum(sample_weight_cpu))
         else:
-            total_weighted_se += float(np.sum(diff * diff))
+            total_weighted_se += float(np.sum(1.0 - 2.0 * target_prob + pred_sq))
             total_weight += x_cpu.shape[0]
         sum_prob += float(np.sum(pred_cpu))
 
