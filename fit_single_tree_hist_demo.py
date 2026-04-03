@@ -71,6 +71,11 @@ parser.add_argument(
     action="store_true",
     help="Profile training and evaluation. Plotting is excluded.",
 )
+parser.add_argument(
+    "--full-output",
+    action="store_true",
+    help="Print the full tree and generate plots after the main run.",
+)
 args, _unknown = parser.parse_known_args()
 
 
@@ -1232,6 +1237,21 @@ mean_sum_prob = sum_prob / max(total_count, 1)
 if evaluation_profile is not None:
     _finish_profile(evaluation_profile)
     _print_profile(evaluation_profile)
+    print()
+    print("Inference done.")
+
+fresh_inference_profile = _start_profile("fresh_inference") if args.profile and PREDICT_METHOD == "gpu" else None
+if fresh_inference_profile is not None:
+    fresh_sum_prob = 0.0
+    fresh_count = 0
+    for x_cpu, _ in GaussianClassStreamProvider(**provider_kwargs):
+        pred_cpu = predict_batch_gpu(x_cpu)
+        fresh_sum_prob += float(np.sum(pred_cpu))
+        fresh_count += x_cpu.shape[0]
+        _update_profile(fresh_inference_profile)
+    _finish_profile(fresh_inference_profile)
+    _print_profile(fresh_inference_profile)
+    print(f"Fresh inference mean sum of class predictions: {fresh_sum_prob / max(fresh_count, 1):.6f}")
 
 print()
 print(f"Built tree with {len(nodes)} nodes and {n_leaves} leaves.")
@@ -1243,10 +1263,6 @@ else:
     print(f"Final streamed train MSE: {train_mse:.6f}")
 print(f"Mean sum of class predictions: {mean_sum_prob:.6f}")
 print(f"Prediction method: {PREDICT_METHOD}")
-print()
-print("Tree:")
-
-
 def print_tree(node_id: int, indent: str = "") -> None:
     node = nodes[node_id]
     if node.is_leaf:
@@ -1265,18 +1281,19 @@ def print_tree(node_id: int, indent: str = "") -> None:
     print_tree(node.left_child, indent + "  ")
     print_tree(node.right_child, indent + "  ")
 
+if args.full_output or not args.profile:
+    print()
+    print("Tree:")
+    print_tree(0)
 
-print_tree(0)
-
-
-make_feature_weighted_hist_plots(
-    training_id=PLOT_TRAINING_ID,
-    provider_class=GaussianClassStreamProvider,
-    provider_kwargs=provider_kwargs,
-    predictor=predict_batch,
-    n_features=N_FEATURES,
-    n_classes=N_CLASSES,
-    n_bins=PLOT_BINS,
-)
-print()
-print(f"Saved validation plots under ./plots/{PLOT_TRAINING_ID}/")
+    make_feature_weighted_hist_plots(
+        training_id=PLOT_TRAINING_ID,
+        provider_class=GaussianClassStreamProvider,
+        provider_kwargs=provider_kwargs,
+        predictor=predict_batch,
+        n_features=N_FEATURES,
+        n_classes=N_CLASSES,
+        n_bins=PLOT_BINS,
+    )
+    print()
+    print(f"Saved validation plots under ./plots/{PLOT_TRAINING_ID}/")
