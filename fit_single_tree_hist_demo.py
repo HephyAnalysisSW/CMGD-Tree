@@ -4,13 +4,13 @@ import argparse
 import ast
 import os
 import time
-from dataclasses import dataclass
 
 import cupy as cp
 import numpy as np
 from numba import cuda
 
 from plot_feature_ratios import make_feature_weighted_hist_plots
+from single_tree import Node, Objective, SingleTree
 from synthetic_provider import GaussianClassStreamProvider
 
 try:
@@ -128,55 +128,6 @@ def _parse_args():
 
 
 ARGS = _parse_args()
-
-
-@dataclass
-class Objective:
-    name: str
-    class_weights: np.ndarray
-    use_weights: bool
-
-    @classmethod
-    def from_tree_config(cls, tree_config: dict, n_classes: int) -> "Objective":
-        configured = tree_config.get("class_weights")
-        if configured is None:
-            return cls(name="mse", class_weights=np.ones(n_classes, dtype=np.float32), use_weights=False)
-
-        class_weights = np.asarray(configured, dtype=np.float32)
-        if class_weights.shape != (n_classes,):
-            raise ValueError("class_weights must have length n_classes.")
-        if np.any(class_weights < 0.0):
-            raise ValueError("class_weights must be non-negative.")
-        return cls(name="weighted_mse", class_weights=class_weights, use_weights=True)
-
-    def leaf_value(self, sum_y: np.ndarray, denominator: float, reg_lambda: float) -> np.ndarray:
-        return sum_y / (denominator + reg_lambda)
-
-    def leaf_score(self, sum_y: np.ndarray, denominator: float, reg_lambda: float) -> float:
-        if denominator <= 0.0:
-            return -np.inf
-        return float(np.dot(sum_y, sum_y) / (denominator + reg_lambda))
-
-    def cache_batch(self, bins_cpu: np.ndarray, y_cpu: np.ndarray) -> tuple[np.ndarray, ...]:
-        cls_cpu = np.argmax(y_cpu, axis=1).astype(np.int16 if y_cpu.shape[1] > 256 else np.uint8, copy=False)
-        if self.use_weights:
-            sample_weight_cpu = self.class_weights[cls_cpu].astype(np.float32, copy=False)
-            return bins_cpu, cls_cpu.copy(), sample_weight_cpu
-        return bins_cpu, cls_cpu.copy()
-
-    def denominator_from_sum(self, sum_y: np.ndarray, count: int) -> float:
-        if self.use_weights:
-            return float(np.sum(sum_y))
-        return float(count)
-
-    def mse_from_predictions(self, pred_cpu: np.ndarray, cls_cpu: np.ndarray, sample_weight_cpu: np.ndarray | None = None) -> tuple[float, float]:
-        pred_sq = np.sum(pred_cpu * pred_cpu, axis=1)
-        target_prob = pred_cpu[np.arange(pred_cpu.shape[0]), cls_cpu]
-        per_row = 1.0 - 2.0 * target_prob + pred_sq
-        if sample_weight_cpu is None:
-            return float(np.sum(per_row)), float(pred_cpu.shape[0])
-        return float(np.sum(sample_weight_cpu * per_row)), float(np.sum(sample_weight_cpu))
-
 
 OBJECTIVE = Objective.from_tree_config(TREE_CONFIG, DATASET_CONFIG.get("n_classes"))
 
@@ -669,154 +620,6 @@ def _print_profile(profile_state: dict):
     )
 
 
-@dataclass
-class Node:
-    node_id: int
-    depth: int
-    is_leaf: bool = True
-    expandable: bool = True
-    split_feature: int = -1
-    split_bin: int = -1
-    split_threshold: float = 0.0
-    left_child: int = -1
-    right_child: int = -1
-    value: np.ndarray | None = None
-    count: int = 0
-    gain: float = -np.inf
-    best_left_value: np.ndarray | None = None
-    best_right_value: np.ndarray | None = None
-    best_left_count: int = 0
-    best_right_count: int = 0
-
-
-class SingleTree:
-    def __init__(self, n_classes: int):
-        self.n_classes = n_classes
-        self.nodes: list[Node] = [Node(node_id=0, depth=0)]
-        self.n_leaves = 1
-        self.next_node_id = 1
-        self.root_score: float | None = None
-        self.root_weight: float | None = None
-        self.leaf_value_cpu = None
-        self.split_feature_cpu = None
-        self.split_bin_cpu = None
-        self.split_threshold_cpu = None
-        self.left_child_cpu = None
-        self.right_child_cpu = None
-        self.is_leaf_cpu = None
-        self.split_feature_gpu = None
-        self.split_bin_gpu = None
-        self.split_threshold_gpu = None
-        self.left_child_gpu = None
-        self.right_child_gpu = None
-        self.is_leaf_gpu = None
-        self.leaf_value_gpu = None
-
-    def candidate_node_ids(self) -> list[int]:
-        node_ids = [
-            node.node_id
-            for node in self.nodes
-            if node.is_leaf and node.expandable and node.depth < TREE_CONFIG.get("max_depth")
-        ]
-        if TREE_CONFIG.get("grow_policy") == "depthwise" and node_ids:
-            frontier_depth = min(self.nodes[node_id].depth for node_id in node_ids)
-            node_ids = [node_id for node_id in node_ids if self.nodes[node_id].depth == frontier_depth]
-        return node_ids
-
-    def finalize_prediction_state(self):
-        self.leaf_value_cpu = np.zeros((len(self.nodes), self.n_classes), dtype=np.float32)
-        self.split_feature_cpu = np.array([node.split_feature for node in self.nodes], dtype=np.int32)
-        self.split_bin_cpu = np.array([node.split_bin for node in self.nodes], dtype=np.int32)
-        self.split_threshold_cpu = np.array([node.split_threshold for node in self.nodes], dtype=np.float32)
-        self.left_child_cpu = np.array([node.left_child for node in self.nodes], dtype=np.int32)
-        self.right_child_cpu = np.array([node.right_child for node in self.nodes], dtype=np.int32)
-        self.is_leaf_cpu = np.array([1 if node.is_leaf else 0 for node in self.nodes], dtype=np.int8)
-
-        for node in self.nodes:
-            if node.value is not None:
-                self.leaf_value_cpu[node.node_id] = node.value
-
-        self.split_feature_gpu = cp.asarray(self.split_feature_cpu)
-        self.split_bin_gpu = cp.asarray(self.split_bin_cpu)
-        self.split_threshold_gpu = cp.asarray(self.split_threshold_cpu)
-        self.left_child_gpu = cp.asarray(self.left_child_cpu)
-        self.right_child_gpu = cp.asarray(self.right_child_cpu)
-        self.is_leaf_gpu = cp.asarray(self.is_leaf_cpu)
-        self.leaf_value_gpu = cp.asarray(self.leaf_value_cpu)
-
-    def predict_batch_cpu(self, x: np.ndarray) -> np.ndarray:
-        pred = np.empty((x.shape[0], self.n_classes), dtype=np.float32)
-        pending = [(0, np.arange(x.shape[0], dtype=np.int32))]
-        while pending:
-            node_id, row_idx = pending.pop()
-            if row_idx.size == 0:
-                continue
-            if self.is_leaf_cpu[node_id]:
-                pred[row_idx] = self.leaf_value_cpu[node_id]
-                continue
-            feature = self.split_feature_cpu[node_id]
-            threshold = self.split_threshold_cpu[node_id]
-            left_mask = x[row_idx, feature] <= threshold
-            pending.append((self.right_child_cpu[node_id], row_idx[~left_mask]))
-            pending.append((self.left_child_cpu[node_id], row_idx[left_mask]))
-        return pred
-
-    def predict_batch_gpu(self, x: np.ndarray | None = None, bins: np.ndarray | None = None) -> np.ndarray:
-        if (x is None) == (bins is None):
-            raise ValueError("Provide exactly one of x or bins.")
-
-        pred_gpu = cp.empty(((x.shape[0] if x is not None else bins.shape[0]), self.n_classes), dtype=cp.float32)
-        blocks_1d = (pred_gpu.shape[0] + TRAINING_CONFIG.get("threads_per_block") - 1) // TRAINING_CONFIG.get("threads_per_block")
-        if bins is not None:
-            bins_gpu = cp.asarray(bins)
-            predict_rows_gpu_bins_kernel[blocks_1d, TRAINING_CONFIG.get("threads_per_block")](
-                bins_gpu,
-                self.split_feature_gpu,
-                self.split_bin_gpu,
-                self.left_child_gpu,
-                self.right_child_gpu,
-                self.is_leaf_gpu,
-                self.leaf_value_gpu,
-                pred_gpu,
-            )
-        else:
-            x_gpu = cp.asarray(x, dtype=cp.float32)
-            predict_rows_gpu_kernel[blocks_1d, TRAINING_CONFIG.get("threads_per_block")](
-                x_gpu,
-                self.split_feature_gpu,
-                self.split_threshold_gpu,
-                self.left_child_gpu,
-                self.right_child_gpu,
-                self.is_leaf_gpu,
-                self.leaf_value_gpu,
-                pred_gpu,
-            )
-        cuda.synchronize()
-        return cp.asnumpy(pred_gpu)
-
-    def predict_batch(self, x: np.ndarray) -> np.ndarray:
-        if TRAINING_CONFIG.get("predict_method") == "gpu":
-            return self.predict_batch_gpu(x=x)
-        return self.predict_batch_cpu(x)
-
-    def print_tree(self, node_id: int = 0, indent: str = "") -> None:
-        node = self.nodes[node_id]
-        if node.is_leaf:
-            print(
-                indent
-                + f"leaf id={node.node_id} depth={node.depth} count={node.count} "
-                + f"value={np.array2string(node.value, precision=3, suppress_small=True)}"
-            )
-            return
-
-        print(
-            indent
-            + f"node id={node.node_id} depth={node.depth} feature={node.split_feature} "
-            + f"threshold={node.split_threshold:.5f} gain={node.gain:.6f}"
-        )
-        self.print_tree(node.left_child, indent + "  ")
-        self.print_tree(node.right_child, indent + "  ")
-
 
 def _provider_kwargs():
     return {
@@ -828,6 +631,50 @@ def _provider_kwargs():
         "feature_noise": DATASET_CONFIG.get("feature_noise"),
         "seed": DATASET_CONFIG.get("seed"),
     }
+
+
+def _finalize_gpu_prediction_state(tree: SingleTree):
+    tree.split_feature_gpu = cp.asarray(tree.split_feature_cpu)
+    tree.split_bin_gpu = cp.asarray(tree.split_bin_cpu)
+    tree.split_threshold_gpu = cp.asarray(tree.split_threshold_cpu)
+    tree.left_child_gpu = cp.asarray(tree.left_child_cpu)
+    tree.right_child_gpu = cp.asarray(tree.right_child_cpu)
+    tree.is_leaf_gpu = cp.asarray(tree.is_leaf_cpu)
+    tree.leaf_value_gpu = cp.asarray(tree.leaf_value_cpu)
+
+
+def _predict_batch_gpu(tree: SingleTree, x: np.ndarray | None = None, bins: np.ndarray | None = None) -> np.ndarray:
+    if (x is None) == (bins is None):
+        raise ValueError("Provide exactly one of x or bins.")
+
+    pred_gpu = cp.empty(((x.shape[0] if x is not None else bins.shape[0]), tree.n_classes), dtype=cp.float32)
+    blocks_1d = (pred_gpu.shape[0] + TRAINING_CONFIG.get("threads_per_block") - 1) // TRAINING_CONFIG.get("threads_per_block")
+    if bins is not None:
+        bins_gpu = cp.asarray(bins)
+        predict_rows_gpu_bins_kernel[blocks_1d, TRAINING_CONFIG.get("threads_per_block")](
+            bins_gpu,
+            tree.split_feature_gpu,
+            tree.split_bin_gpu,
+            tree.left_child_gpu,
+            tree.right_child_gpu,
+            tree.is_leaf_gpu,
+            tree.leaf_value_gpu,
+            pred_gpu,
+        )
+    else:
+        x_gpu = cp.asarray(x, dtype=cp.float32)
+        predict_rows_gpu_kernel[blocks_1d, TRAINING_CONFIG.get("threads_per_block")](
+            x_gpu,
+            tree.split_feature_gpu,
+            tree.split_threshold_gpu,
+            tree.left_child_gpu,
+            tree.right_child_gpu,
+            tree.is_leaf_gpu,
+            tree.leaf_value_gpu,
+            pred_gpu,
+        )
+    cuda.synchronize()
+    return cp.asnumpy(pred_gpu)
 
 
 def _build_cuts(provider_kwargs: dict) -> tuple[np.ndarray, cp.ndarray]:
@@ -892,7 +739,7 @@ def _train_tree(
     tree_growth_profile = _start_profile("tree_growth") if ARGS.profile else None
 
     while True:
-        candidate_node_ids = tree.candidate_node_ids()
+        candidate_node_ids = tree.candidate_node_ids(TREE_CONFIG)
         if not candidate_node_ids:
             break
 
@@ -1160,7 +1007,7 @@ def _evaluate_cached_training_stream(tree: SingleTree, quantized_train_batches: 
 
     if TRAINING_CONFIG.get("predict_method") == "gpu":
         for batch in quantized_train_batches:
-            pred_cpu = tree.predict_batch_gpu(bins=batch[0])
+            pred_cpu = _predict_batch_gpu(tree, bins=batch[0])
             error_sum, denominator = OBJECTIVE.mse_from_predictions(
                 pred_cpu,
                 batch[1],
@@ -1204,7 +1051,7 @@ def _profile_fresh_inference(tree: SingleTree, provider_kwargs: dict):
     fresh_sum_prob = 0.0
     fresh_count = 0
     for x_cpu, _ in GaussianClassStreamProvider(**provider_kwargs):
-        pred_cpu = tree.predict_batch_gpu(x_cpu)
+        pred_cpu = _predict_batch_gpu(tree, x=x_cpu)
         fresh_sum_prob += float(np.sum(pred_cpu))
         fresh_count += x_cpu.shape[0]
         _update_profile(fresh_profile)
@@ -1237,6 +1084,7 @@ def main():
         _finish_profile(training_profile)
         _print_profile(training_profile)
     tree.finalize_prediction_state()
+    _finalize_gpu_prediction_state(tree)
 
     train_mse, mean_sum_prob = _evaluate_cached_training_stream(tree, quantized_train_batches)
     _profile_fresh_inference(tree, provider_kwargs)
@@ -1264,7 +1112,11 @@ if __name__ == "__main__":
             training_id=TRAINING_CONFIG.get("plot_training_id"),
             provider_class=GaussianClassStreamProvider,
             provider_kwargs=provider_kwargs,
-            predictor=trained_tree.predict_batch,
+            predictor=lambda x: trained_tree.predict_batch(
+                x,
+                predict_method=TRAINING_CONFIG.get("predict_method"),
+                gpu_predictor=lambda batch: _predict_batch_gpu(trained_tree, x=batch),
+            ),
             n_features=DATASET_CONFIG.get("n_features"),
             n_classes=DATASET_CONFIG.get("n_classes"),
             n_bins=TRAINING_CONFIG.get("plot_bins"),
