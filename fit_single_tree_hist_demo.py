@@ -848,8 +848,21 @@ def predict_one(x_row: np.ndarray) -> np.ndarray:
 
 def predict_batch_cpu(x: np.ndarray) -> np.ndarray:
     pred = np.empty((x.shape[0], N_CLASSES), dtype=np.float32)
-    for i in range(x.shape[0]):
-        pred[i] = predict_one(x[i])
+    pending = [(0, np.arange(x.shape[0], dtype=np.int32))]
+    while pending:
+        node_id, row_idx = pending.pop()
+        if row_idx.size == 0:
+            continue
+
+        if is_leaf_cpu[node_id]:
+            pred[row_idx] = leaf_value_cpu[node_id]
+            continue
+
+        feature = split_feature_cpu[node_id]
+        threshold = split_threshold_cpu[node_id]
+        left_mask = x[row_idx, feature] <= threshold
+        pending.append((right_child_cpu[node_id], row_idx[~left_mask]))
+        pending.append((left_child_cpu[node_id], row_idx[left_mask]))
     return pred
 
 
