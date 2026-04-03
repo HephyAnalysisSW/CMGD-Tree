@@ -581,16 +581,20 @@ cuts_gpu = cp.asarray(cuts_cpu)
 
 cache_build_profile = _start_profile("cache_build") if args.profile else None
 quantized_train_batches = []
+cache_x_gpu = None
+cache_bins_gpu = None
 for x_cpu, y_cpu in GaussianClassStreamProvider(**provider_kwargs):
-    x_gpu = cp.asarray(x_cpu, dtype=cp.float32)
-    bins_gpu = cp.empty((x_cpu.shape[0], x_cpu.shape[1]), dtype=BIN_CP_DTYPE)
+    if cache_x_gpu is None or cache_x_gpu.shape != x_cpu.shape:
+        cache_x_gpu = cp.empty(x_cpu.shape, dtype=cp.float32)
+        cache_bins_gpu = cp.empty(x_cpu.shape, dtype=BIN_CP_DTYPE)
+    cache_x_gpu.set(x_cpu)
     quant_blocks = (
-        (x_gpu.shape[0] + 15) // 16,
-        (x_gpu.shape[1] + 15) // 16,
+        (cache_x_gpu.shape[0] + 15) // 16,
+        (cache_x_gpu.shape[1] + 15) // 16,
     )
-    quantize_batch[quant_blocks, (16, 16)](x_gpu, cuts_gpu, bins_gpu)
+    quantize_batch[quant_blocks, (16, 16)](cache_x_gpu, cuts_gpu, cache_bins_gpu)
     cuda.synchronize()
-    bins_cpu = cp.asnumpy(bins_gpu)
+    bins_cpu = cp.asnumpy(cache_bins_gpu)
     quantized_train_batches.append((bins_cpu, y_cpu.copy()))
     if cache_build_profile is not None:
         _update_profile(cache_build_profile)
