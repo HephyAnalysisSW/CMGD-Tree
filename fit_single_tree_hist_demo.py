@@ -531,6 +531,8 @@ print(
     f"max_depth={MAX_DEPTH}, max_leaves={MAX_LEAVES}, max_bin={MAX_BIN}"
 )
 
+training_profile = _start_profile("training") if args.profile else None
+
 
 # -----------------------------------------------------------------------------
 # Global feature cuts. Not profiled: this is setup / data-side work.
@@ -550,6 +552,7 @@ quantile_levels = np.linspace(0.0, 1.0, MAX_BIN + 1, dtype=np.float64)[1:-1]
 cuts_cpu = np.quantile(cut_sample, quantile_levels, axis=0).T.astype(np.float32)
 cuts_gpu = cp.asarray(cuts_cpu)
 
+cache_build_profile = _start_profile("cache_build") if args.profile else None
 quantized_train_batches = []
 for x_cpu, y_cpu in GaussianClassStreamProvider(**provider_kwargs):
     bins_cpu = np.empty((x_cpu.shape[0], x_cpu.shape[1]), dtype=np.uint16)
@@ -560,6 +563,12 @@ for x_cpu, y_cpu in GaussianClassStreamProvider(**provider_kwargs):
             side="left",
         )
     quantized_train_batches.append((bins_cpu, y_cpu.copy()))
+    if cache_build_profile is not None:
+        _update_profile(cache_build_profile)
+
+if cache_build_profile is not None:
+    _finish_profile(cache_build_profile)
+    _print_profile(cache_build_profile)
 
 
 # -----------------------------------------------------------------------------
@@ -570,8 +579,7 @@ n_leaves = 1
 next_node_id = 1
 root_score = None
 
-
-training_profile = _start_profile("training") if args.profile else None
+tree_growth_profile = _start_profile("tree_growth") if args.profile else None
 
 
 # -----------------------------------------------------------------------------
@@ -638,6 +646,8 @@ while True:
             hist_sum_gpu,
         )
 
+        if tree_growth_profile is not None:
+            _update_profile(tree_growth_profile)
         if training_profile is not None:
             _update_profile(training_profile)
 
@@ -698,6 +708,8 @@ while True:
 
     cuda.synchronize()
 
+    if tree_growth_profile is not None:
+        _update_profile(tree_growth_profile)
     if training_profile is not None:
         _update_profile(training_profile)
 
@@ -812,10 +824,14 @@ while True:
         nodes.append(right_node)
         n_leaves += 1
 
+    if tree_growth_profile is not None:
+        _update_profile(tree_growth_profile)
     if training_profile is not None:
         _update_profile(training_profile)
 
-
+if tree_growth_profile is not None:
+    _finish_profile(tree_growth_profile)
+    _print_profile(tree_growth_profile)
 if training_profile is not None:
     _finish_profile(training_profile)
     _print_profile(training_profile)
