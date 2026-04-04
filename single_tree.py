@@ -181,7 +181,6 @@ class SingleTree:
         self.n_leaves = 1
         self.next_node_id = 1
         self.root_score: float | None = None
-        self.root_weight: float | None = None
         self.leaf_value_cpu = None
         self.split_feature_cpu = None
         self.split_bin_cpu = None
@@ -338,62 +337,30 @@ class AdditiveEnsemble:
         self._numba_is_leaf = np.asarray(is_leaf, dtype=np.int8)
         self._numba_leaf_value = (self.learning_rate * np.concatenate(leaf_value, axis=0)).astype(np.float32, copy=False)
 
+    def _predict_batch_cpu_numba(self, x: np.ndarray, cpu_predictor: str) -> np.ndarray:
+        self._ensure_numba_state()
+        pred = np.empty((x.shape[0], self.prediction_dim), dtype=np.float32)
+        if self.prediction_dim == 4:
+            kernel = _predict_forest_numba_dim4_parallel if cpu_predictor == "numba_parallel" else _predict_forest_numba_dim4
+        else:
+            kernel = _predict_forest_numba_parallel if cpu_predictor == "numba_parallel" else _predict_forest_numba
+        kernel(
+            x,
+            self.base_prediction,
+            self._numba_tree_offsets,
+            self._numba_split_feature,
+            self._numba_split_threshold,
+            self._numba_left_child,
+            self._numba_right_child,
+            self._numba_is_leaf,
+            self._numba_leaf_value,
+            pred,
+        )
+        return pred
+
     def predict_batch_cpu(self, x: np.ndarray, project_prediction, cpu_predictor: str = "index") -> np.ndarray:
         if cpu_predictor in {"numba", "numba_parallel"}:
-            self._ensure_numba_state()
-            pred = np.empty((x.shape[0], self.prediction_dim), dtype=np.float32)
-            if self.prediction_dim == 4 and cpu_predictor == "numba_parallel":
-                _predict_forest_numba_dim4_parallel(
-                    x,
-                    self.base_prediction,
-                    self._numba_tree_offsets,
-                    self._numba_split_feature,
-                    self._numba_split_threshold,
-                    self._numba_left_child,
-                    self._numba_right_child,
-                    self._numba_is_leaf,
-                    self._numba_leaf_value,
-                    pred,
-                )
-            elif self.prediction_dim == 4:
-                _predict_forest_numba_dim4(
-                    x,
-                    self.base_prediction,
-                    self._numba_tree_offsets,
-                    self._numba_split_feature,
-                    self._numba_split_threshold,
-                    self._numba_left_child,
-                    self._numba_right_child,
-                    self._numba_is_leaf,
-                    self._numba_leaf_value,
-                    pred,
-                )
-            elif cpu_predictor == "numba_parallel":
-                _predict_forest_numba_parallel(
-                    x,
-                    self.base_prediction,
-                    self._numba_tree_offsets,
-                    self._numba_split_feature,
-                    self._numba_split_threshold,
-                    self._numba_left_child,
-                    self._numba_right_child,
-                    self._numba_is_leaf,
-                    self._numba_leaf_value,
-                    pred,
-                )
-            else:
-                _predict_forest_numba(
-                    x,
-                    self.base_prediction,
-                    self._numba_tree_offsets,
-                    self._numba_split_feature,
-                    self._numba_split_threshold,
-                    self._numba_left_child,
-                    self._numba_right_child,
-                    self._numba_is_leaf,
-                    self._numba_leaf_value,
-                    pred,
-                )
+            pred = self._predict_batch_cpu_numba(x, cpu_predictor)
             return project_prediction(pred)
         pred = np.repeat(self.base_prediction[None, :], x.shape[0], axis=0)
         for tree in self.trees:

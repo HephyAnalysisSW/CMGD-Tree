@@ -748,7 +748,6 @@ class GpuSingleTreeTrainer:
                 parent_score = self._leaf_score(parent_sum, parent_weight)
                 if tree.root_score is None and node_id == 0:
                     tree.root_score = parent_score
-                    tree.root_weight = parent_weight
                 node.gain = -np.inf
                 node.best_left_value = None
                 node.best_right_value = None
