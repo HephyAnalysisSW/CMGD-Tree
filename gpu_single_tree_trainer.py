@@ -467,6 +467,14 @@ class GpuSingleTreeTrainer:
     def provider_kwargs(self) -> dict:
         return self.family.provider_kwargs(self.dataset_config)
 
+    def fresh_inference_dataset_config(self) -> dict:
+        fresh_config = dict(self.dataset_config)
+        if self.training_config.get("fresh_inference_batch_size") is not None:
+            fresh_config["batch_size"] = self.training_config.get("fresh_inference_batch_size")
+        if self.training_config.get("fresh_inference_n_batches") is not None:
+            fresh_config["n_batches"] = self.training_config.get("fresh_inference_n_batches")
+        return fresh_config
+
     def _bin_cp_dtype(self):
         return cp.uint8 if self.tree_config.get("max_bin") <= 256 else cp.uint16
 
@@ -864,13 +872,22 @@ class GpuSingleTreeTrainer:
         return train_metric, mean_sum_prob
 
     def profile_fresh_inference(self, model: AdditiveEnsemble, profile: bool):
-        if not profile or self.training_config.get("predict_method") != "gpu":
+        if not profile:
             return
         fresh_profile = _start_profile("fresh_inference")
         fresh_sum_prob = 0.0
         fresh_count = 0
-        for batch in self.family.stream_batches(self.dataset_config):
-            pred_cpu = self.predict_model_batch(model, batch.x)
+        fresh_dataset_config = self.fresh_inference_dataset_config()
+        for batch in self.family.stream_batches(fresh_dataset_config):
+            if self.training_config.get("predict_method") == "gpu":
+                pred_cpu = self.predict_model_batch(model, batch.x)
+            else:
+                pred_cpu = model.predict_batch(
+                    batch.x,
+                    predict_method="cpu",
+                    project_prediction=self.family.project_prediction,
+                    cpu_predictor=self.training_config.get("cpu_predictor"),
+                )
             fresh_sum_prob += float(np.sum(pred_cpu))
             fresh_count += batch.x.shape[0]
             _update_profile(fresh_profile)

@@ -37,8 +37,11 @@ TRAINING_CONFIG = {
     "plot_mode": "all",
     "threads_per_block": 128,
     "predict_method": "cpu",
+    "cpu_predictor": "index",
     "n_boost_rounds": 2,
     "learning_rate": 1.0,
+    "fresh_inference_batch_size": None,
+    "fresh_inference_n_batches": None,
 }
 
 CONFIG_GROUPS = {
@@ -114,6 +117,8 @@ def _parse_args():
         raise ValueError("family must be 'normal_identity' or 'poisson'.")
     if TRAINING_CONFIG.get("predict_method") not in {"cpu", "gpu"}:
         raise ValueError("predict_method must be 'cpu' or 'gpu'.")
+    if TRAINING_CONFIG.get("cpu_predictor") not in {"index", "leaf_mask"}:
+        raise ValueError("cpu_predictor must be 'index' or 'leaf_mask'.")
     return args
 
 
@@ -143,6 +148,8 @@ def main():
     print(f"Final streamed train {FAMILY.monitor_name}: {train_metric:.6f}")
     print(f"Mean sum of class predictions: {mean_sum_prob:.6f}")
     print(f"Prediction method: {TRAINING_CONFIG.get('predict_method')}")
+    if TRAINING_CONFIG.get("predict_method") == "cpu":
+        print(f"CPU predictor: {TRAINING_CONFIG.get('cpu_predictor')}")
     return model, provider_kwargs
 
 
@@ -163,6 +170,7 @@ if __name__ == "__main__":
                 predict_method=TRAINING_CONFIG.get("predict_method"),
                 gpu_predictor=lambda batch: TRAINER.predict_model_batch(model, batch),
                 project_prediction=FAMILY.project_prediction,
+                cpu_predictor=TRAINING_CONFIG.get("cpu_predictor"),
             ),
             n_classes=DATASET_CONFIG.get("n_classes"),
             plot_config=FAMILY.plot_config(

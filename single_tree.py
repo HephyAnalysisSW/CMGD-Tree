@@ -40,6 +40,7 @@ class SingleTree:
         self.left_child_cpu = None
         self.right_child_cpu = None
         self.is_leaf_cpu = None
+        self.leaf_paths = None
 
     def candidate_node_ids(self, tree_config: dict) -> list[int]:
         node_ids = [
@@ -63,8 +64,26 @@ class SingleTree:
         for node in self.nodes:
             if node.value is not None:
                 self.leaf_value_cpu[node.node_id] = node.value
+        self.leaf_paths = []
+        self._collect_leaf_paths(0, [])
 
-    def predict_batch_cpu(self, x: np.ndarray) -> np.ndarray:
+    def _collect_leaf_paths(self, node_id: int, path: list[tuple[int, float, bool]]):
+        if self.is_leaf_cpu[node_id]:
+            self.leaf_paths.append(
+                (
+                    node_id,
+                    np.array([entry[0] for entry in path], dtype=np.int32),
+                    np.array([entry[1] for entry in path], dtype=np.float32),
+                    np.array([entry[2] for entry in path], dtype=np.bool_),
+                )
+            )
+            return
+        feature = int(self.split_feature_cpu[node_id])
+        threshold = float(self.split_threshold_cpu[node_id])
+        self._collect_leaf_paths(self.left_child_cpu[node_id], path + [(feature, threshold, True)])
+        self._collect_leaf_paths(self.right_child_cpu[node_id], path + [(feature, threshold, False)])
+
+    def predict_batch_cpu_index(self, x: np.ndarray) -> np.ndarray:
         pred = np.empty((x.shape[0], self.prediction_dim), dtype=np.float32)
         pending = [(0, np.arange(x.shape[0], dtype=np.int32))]
         while pending:
@@ -81,12 +100,29 @@ class SingleTree:
             pending.append((self.left_child_cpu[node_id], row_idx[left_mask]))
         return pred
 
-    def predict_batch(self, x: np.ndarray, predict_method: str = "cpu", gpu_predictor=None) -> np.ndarray:
+    def predict_batch_cpu_leaf_mask(self, x: np.ndarray) -> np.ndarray:
+        pred = np.empty((x.shape[0], self.prediction_dim), dtype=np.float32)
+        for leaf_id, features, thresholds, go_left in self.leaf_paths:
+            mask = np.ones(x.shape[0], dtype=np.bool_)
+            for feature, threshold, left_flag in zip(features, thresholds, go_left):
+                if left_flag:
+                    mask &= x[:, feature] <= threshold
+                else:
+                    mask &= x[:, feature] > threshold
+            pred[mask] = self.leaf_value_cpu[leaf_id]
+        return pred
+
+    def predict_batch_cpu(self, x: np.ndarray, cpu_predictor: str = "index") -> np.ndarray:
+        if cpu_predictor == "leaf_mask":
+            return self.predict_batch_cpu_leaf_mask(x)
+        return self.predict_batch_cpu_index(x)
+
+    def predict_batch(self, x: np.ndarray, predict_method: str = "cpu", gpu_predictor=None, cpu_predictor: str = "index") -> np.ndarray:
         if predict_method == "gpu":
             if gpu_predictor is None:
                 raise ValueError("gpu_predictor is required for GPU prediction.")
             return gpu_predictor(x)
-        return self.predict_batch_cpu(x)
+        return self.predict_batch_cpu(x, cpu_predictor=cpu_predictor)
 
     def print_tree(self, node_id: int = 0, indent: str = "") -> None:
         node = self.nodes[node_id]
@@ -116,19 +152,19 @@ class AdditiveEnsemble:
     def add_tree(self, tree: SingleTree):
         self.trees.append(tree)
 
-    def predict_batch_cpu(self, x: np.ndarray, project_prediction) -> np.ndarray:
+    def predict_batch_cpu(self, x: np.ndarray, project_prediction, cpu_predictor: str = "index") -> np.ndarray:
         pred = np.repeat(self.base_prediction[None, :], x.shape[0], axis=0)
         for tree in self.trees:
-            pred += self.learning_rate * tree.predict_batch_cpu(x)
+            pred += self.learning_rate * tree.predict_batch_cpu(x, cpu_predictor=cpu_predictor)
         return project_prediction(pred)
 
-    def predict_batch(self, x: np.ndarray, predict_method: str = "cpu", gpu_predictor=None, project_prediction=None) -> np.ndarray:
+    def predict_batch(self, x: np.ndarray, predict_method: str = "cpu", gpu_predictor=None, project_prediction=None, cpu_predictor: str = "index") -> np.ndarray:
         if predict_method == "gpu":
             if gpu_predictor is None:
                 raise ValueError("gpu_predictor is required for GPU prediction.")
             pred = gpu_predictor(x)
         else:
-            pred = self.predict_batch_cpu(x, project_prediction)
+            pred = self.predict_batch_cpu(x, project_prediction, cpu_predictor=cpu_predictor)
         if project_prediction is None or predict_method != "gpu":
             return pred
         return project_prediction(pred)
