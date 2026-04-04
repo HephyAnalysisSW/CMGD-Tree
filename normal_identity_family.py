@@ -31,7 +31,7 @@ Examples for later families:
    pred:     mean success count mu in [0, N]
 
 These examples all fit the same near-term pattern:
-- the data loader produces raw y and T(y)
+- the data loader produces T(y)
 - the tree fits vector-valued targets in mean coordinates
 - the global monitor is the family-specific NLL
 """
@@ -47,7 +47,6 @@ import numpy as np
 @dataclass
 class StreamBatch:
     x: np.ndarray
-    y: np.ndarray
     target_stats: np.ndarray
     sample_weight: np.ndarray | None = None
 
@@ -55,7 +54,6 @@ class StreamBatch:
 @dataclass
 class CachedTrainingBatch:
     bins: np.ndarray
-    y: np.ndarray
     target_stats: np.ndarray
     sample_weight: np.ndarray | None = None
     target_codes: np.ndarray | None = None
@@ -112,8 +110,8 @@ class GaussianClassToyStream:
             size=(self.batch_size, self.n_features),
         ).astype(self.dtype)
         x += self._class_means[cls]
-        y = self._class_targets[cls]
-        return StreamBatch(x=x, y=y, target_stats=y)
+        target_stats = self._class_targets[cls]
+        return StreamBatch(x=x, target_stats=target_stats)
 
 
 @dataclass
@@ -152,8 +150,8 @@ class PoissonToyStream:
             x[:, : min(4, self.n_features)] += self.feature_offset_scale / 4.0
         log_mu = x @ self._w + self._bias[None, :]
         mu = np.exp(np.clip(log_mu, -4.0, 4.0)).astype(self.dtype, copy=False)
-        y = self._rng.poisson(mu).astype(self.dtype)
-        return StreamBatch(x=x, y=y, target_stats=y)
+        target_stats = self._rng.poisson(mu).astype(self.dtype)
+        return StreamBatch(x=x, target_stats=target_stats)
 
 
 @dataclass
@@ -193,14 +191,12 @@ class NormalIdentityFamily:
             sample_weight = self.class_weights[target_codes].astype(np.float32, copy=False)
             return CachedTrainingBatch(
                 bins=bins_cpu,
-                y=batch.y,
                 target_stats=batch.target_stats,
                 sample_weight=sample_weight,
                 target_codes=target_codes.copy(),
             )
         return CachedTrainingBatch(
             bins=bins_cpu,
-            y=batch.y,
             target_stats=batch.target_stats,
             target_codes=target_codes.copy(),
         )
@@ -226,9 +222,9 @@ class NormalIdentityFamily:
             return float(np.sum(target_stat_sum))
         return float(count)
 
-    def monitor_metric(self, pred_cpu: np.ndarray, y_cpu: np.ndarray, sample_weight: np.ndarray | None = None) -> tuple[float, float]:
+    def monitor_metric(self, pred_cpu: np.ndarray, target_stats_cpu: np.ndarray, sample_weight: np.ndarray | None = None) -> tuple[float, float]:
         pred_sq = np.sum(pred_cpu * pred_cpu, axis=1)
-        target_prob = np.sum(pred_cpu * y_cpu, axis=1)
+        target_prob = np.sum(pred_cpu * target_stats_cpu, axis=1)
         per_row = 1.0 - 2.0 * target_prob + pred_sq
         if sample_weight is None:
             return float(np.sum(per_row)), float(pred_cpu.shape[0])
@@ -237,7 +233,16 @@ class NormalIdentityFamily:
     def project_prediction(self, pred_cpu: np.ndarray) -> np.ndarray:
         return pred_cpu
 
-    def plot_config(self, n_features: int) -> dict:
+    def plot_config(self, n_features: int, plot_mode: str = "auto") -> dict:
+        if plot_mode == "feature_target_mean":
+            pairs = []
+            for target_idx in range(min(4, self.prediction_dim)):
+                feature_idx = target_idx % max(n_features, 1)
+                pairs.append((feature_idx, target_idx))
+            return {
+                "mode": "feature_target_mean",
+                "pairs": pairs,
+            }
         return {
             "mode": "class_density",
             "feature_indices": list(range(min(4, n_features))),
@@ -284,7 +289,6 @@ class PoissonFamily:
             sample_weight = np.maximum(total_mass, 1.0).astype(np.float32, copy=False)
         return CachedTrainingBatch(
             bins=bins_cpu,
-            y=batch.y,
             target_stats=target_stats,
             sample_weight=sample_weight,
         )
@@ -313,16 +317,16 @@ class PoissonFamily:
             warnings.warn("Negative Poisson predictions encountered; clipping to epsilon.", RuntimeWarning)
         return pred_proj
 
-    def monitor_metric(self, pred_cpu: np.ndarray, y_cpu: np.ndarray, sample_weight: np.ndarray | None = None) -> tuple[float, float]:
+    def monitor_metric(self, pred_cpu: np.ndarray, target_stats_cpu: np.ndarray, sample_weight: np.ndarray | None = None) -> tuple[float, float]:
         pred_proj = self.project_prediction(pred_cpu).astype(np.float64, copy=False)
-        y64 = y_cpu.astype(np.float64, copy=False)
+        y64 = target_stats_cpu.astype(np.float64, copy=False)
         lgamma = np.vectorize(math.lgamma)
         per_row = np.sum(pred_proj - y64 * np.log(pred_proj) + lgamma(y64 + 1.0), axis=1)
         if sample_weight is None:
             return float(np.sum(per_row)), float(pred_cpu.shape[0])
         return float(np.sum(sample_weight * per_row)), float(np.sum(sample_weight))
 
-    def plot_config(self, n_features: int) -> dict:
+    def plot_config(self, n_features: int, plot_mode: str = "auto") -> dict:
         pairs = []
         for target_idx in range(min(4, self.prediction_dim)):
             feature_idx = target_idx % max(n_features, 1)

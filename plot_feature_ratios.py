@@ -17,7 +17,7 @@ def _collect_batches(provider_class, provider_kwargs: dict, predictor):
     for batch in provider_class(**provider_kwargs):
         if hasattr(batch, "x"):
             x_cpu = batch.x
-            y_cpu = batch.y
+            y_cpu = batch.target_stats
         else:
             x_cpu, y_cpu = batch
         pred_cpu = predictor(x_cpu)

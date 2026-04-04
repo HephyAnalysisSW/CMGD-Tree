@@ -1166,7 +1166,7 @@ class GpuSingleTreeTrainer:
                 pred_cpu = self.predict_batch(tree, bins=batch.bins)
                 error_sum, denominator = self.objective.monitor_metric(
                     pred_cpu,
-                    batch.y,
+                    batch.target_stats,
                     batch.sample_weight if self.objective.use_weights else None,
                 )
                 total_count += batch.bins.shape[0]
@@ -1180,7 +1180,7 @@ class GpuSingleTreeTrainer:
                 pred_cpu = tree.predict_batch(batch.x)
                 error_sum, denominator = self.objective.monitor_metric(
                     pred_cpu,
-                    batch.y,
+                    batch.target_stats,
                     batch.sample_weight,
                 )
                 total_count += batch.x.shape[0]
