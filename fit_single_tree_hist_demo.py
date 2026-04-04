@@ -4,7 +4,7 @@ import argparse
 import ast
 
 from gpu_single_tree_trainer import GpuSingleTreeTrainer
-from normal_identity_family import GaussianClassToyStream, NormalIdentityFamily
+from normal_identity_family import family_from_configs
 from plot_feature_ratios import make_feature_weighted_hist_plots
 
 
@@ -17,6 +17,7 @@ TREE_CONFIG = {
     "min_samples_leaf": 512,
     "min_split_loss": 1e-3,
     "reg_lambda": 0.0,
+    "family": "normal_identity",
     "class_weights": None,
 }
 
@@ -106,13 +107,15 @@ def _parse_args():
 
     if TREE_CONFIG.get("grow_policy") not in {"depthwise", "lossguide"}:
         raise ValueError("grow_policy must be 'depthwise' or 'lossguide'.")
+    if TREE_CONFIG.get("family") not in {"normal_identity", "poisson"}:
+        raise ValueError("family must be 'normal_identity' or 'poisson'.")
     if TRAINING_CONFIG.get("predict_method") not in {"cpu", "gpu"}:
         raise ValueError("predict_method must be 'cpu' or 'gpu'.")
     return args
 
 
 ARGS = _parse_args()
-FAMILY = NormalIdentityFamily.from_configs(TREE_CONFIG, DATASET_CONFIG)
+FAMILY = family_from_configs(TREE_CONFIG, DATASET_CONFIG)
 TRAINER = GpuSingleTreeTrainer(TREE_CONFIG, DATASET_CONFIG, TRAINING_CONFIG, FAMILY)
 
 
@@ -132,8 +135,8 @@ def main():
     trained_tree, provider_kwargs, train_metric, mean_sum_prob = TRAINER.run(profile=ARGS.profile)
     print()
     print(f"Built tree with {len(trained_tree.nodes)} nodes and {trained_tree.n_leaves} leaves.")
-    print("Objective: mse")
-    print(f"Root mse score: {trained_tree.root_score:.6f}")
+    print(f"Objective: {FAMILY.name}")
+    print(f"Root score: {trained_tree.root_score:.6f}")
     print(f"Root objective weight: {trained_tree.root_weight:.6f}")
     if FAMILY.use_weights:
         print(f"Final streamed train weighted {FAMILY.monitor_name}: {train_metric:.6f}")
@@ -152,7 +155,7 @@ if __name__ == "__main__":
         trained_tree.print_tree()
         make_feature_weighted_hist_plots(
             training_id=TRAINING_CONFIG.get("plot_training_id"),
-            provider_class=GaussianClassToyStream,
+            provider_class=FAMILY.provider_class,
             provider_kwargs=provider_kwargs,
             predictor=lambda x: trained_tree.predict_batch(
                 x,

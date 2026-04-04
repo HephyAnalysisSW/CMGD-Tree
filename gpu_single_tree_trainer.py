@@ -89,6 +89,33 @@ def build_candidate_histograms_weighted(bins, cls, sample_weight, row_slot, hist
 
 
 @cuda.jit
+def build_candidate_histograms_dense_unweighted(bins, target_stats, row_slot, hist_count, hist_sum):
+    i = cuda.grid(1)
+    if i < bins.shape[0]:
+        slot = row_slot[i]
+        if slot >= 0:
+            for f in range(bins.shape[1]):
+                b = bins[i, f]
+                cuda.atomic.add(hist_count, (slot, f, b), 1)
+                for c in range(target_stats.shape[1]):
+                    cuda.atomic.add(hist_sum, (slot, f, b, c), target_stats[i, c])
+
+
+@cuda.jit
+def build_candidate_histograms_dense_weighted(bins, target_stats, sample_weight, row_slot, hist_count, hist_sum):
+    i = cuda.grid(1)
+    if i < bins.shape[0]:
+        slot = row_slot[i]
+        if slot >= 0:
+            weight = sample_weight[i]
+            for f in range(bins.shape[1]):
+                b = bins[i, f]
+                cuda.atomic.add(hist_count, (slot, f, b), 1)
+                for c in range(target_stats.shape[1]):
+                    cuda.atomic.add(hist_sum, (slot, f, b, c), weight * target_stats[i, c])
+
+
+@cuda.jit
 def evaluate_feature_splits_unweighted(
     hist_count,
     hist_sum,
@@ -861,7 +888,6 @@ class GpuSingleTreeTrainer:
             threads_per_block = self.training_config.get("threads_per_block")
             for batch in quantized_train_batches:
                 bins_gpu = cp.asarray(batch.bins)
-                target_codes_gpu = cp.asarray(batch.target_codes)
                 blocks_1d = (bins_gpu.shape[0] + threads_per_block - 1) // threads_per_block
                 row_slot_gpu = cp.empty((bins_gpu.shape[0],), dtype=cp.int32)
                 route_rows_to_candidate_slots[blocks_1d, threads_per_block](
@@ -874,23 +900,44 @@ class GpuSingleTreeTrainer:
                     candidate_slot_of_node_gpu,
                     row_slot_gpu,
                 )
-                if self.objective.use_weights:
-                    build_candidate_histograms_weighted[blocks_1d, threads_per_block](
-                        bins_gpu,
-                        target_codes_gpu,
-                        cp.asarray(batch.sample_weight),
-                        row_slot_gpu,
-                        hist_count_gpu,
-                        hist_sum_gpu,
-                    )
+                if self.objective.uses_target_codes(batch):
+                    target_codes_gpu = cp.asarray(batch.target_codes)
+                    if self.objective.use_weights:
+                        build_candidate_histograms_weighted[blocks_1d, threads_per_block](
+                            bins_gpu,
+                            target_codes_gpu,
+                            cp.asarray(batch.sample_weight),
+                            row_slot_gpu,
+                            hist_count_gpu,
+                            hist_sum_gpu,
+                        )
+                    else:
+                        build_candidate_histograms_unweighted[blocks_1d, threads_per_block](
+                            bins_gpu,
+                            target_codes_gpu,
+                            row_slot_gpu,
+                            hist_count_gpu,
+                            hist_sum_gpu,
+                        )
                 else:
-                    build_candidate_histograms_unweighted[blocks_1d, threads_per_block](
-                        bins_gpu,
-                        target_codes_gpu,
-                        row_slot_gpu,
-                        hist_count_gpu,
-                        hist_sum_gpu,
-                    )
+                    target_stats_gpu = cp.asarray(batch.target_stats, dtype=cp.float32)
+                    if self.objective.use_weights:
+                        build_candidate_histograms_dense_weighted[blocks_1d, threads_per_block](
+                            bins_gpu,
+                            target_stats_gpu,
+                            cp.asarray(batch.sample_weight),
+                            row_slot_gpu,
+                            hist_count_gpu,
+                            hist_sum_gpu,
+                        )
+                    else:
+                        build_candidate_histograms_dense_unweighted[blocks_1d, threads_per_block](
+                            bins_gpu,
+                            target_stats_gpu,
+                            row_slot_gpu,
+                            hist_count_gpu,
+                            hist_sum_gpu,
+                        )
                 if tree_growth_profile is not None:
                     _update_profile(tree_growth_profile)
                 if training_profile is not None:
