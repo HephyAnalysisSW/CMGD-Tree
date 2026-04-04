@@ -117,8 +117,8 @@ def _parse_args():
         raise ValueError("family must be 'normal_identity' or 'poisson'.")
     if TRAINING_CONFIG.get("predict_method") not in {"cpu", "gpu"}:
         raise ValueError("predict_method must be 'cpu' or 'gpu'.")
-    if TRAINING_CONFIG.get("cpu_predictor") not in {"index", "leaf_mask"}:
-        raise ValueError("cpu_predictor must be 'index' or 'leaf_mask'.")
+    if TRAINING_CONFIG.get("cpu_predictor") not in {"index", "leaf_mask", "numba"}:
+        raise ValueError("cpu_predictor must be 'index', 'leaf_mask', or 'numba'.")
     return args
 
 
