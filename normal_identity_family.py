@@ -237,6 +237,12 @@ class NormalIdentityFamily:
     def project_prediction(self, pred_cpu: np.ndarray) -> np.ndarray:
         return pred_cpu
 
+    def plot_config(self, n_features: int) -> dict:
+        return {
+            "mode": "class_density",
+            "feature_indices": list(range(min(4, n_features))),
+        }
+
 
 @dataclass
 class PoissonFamily:
@@ -315,6 +321,16 @@ class PoissonFamily:
         if sample_weight is None:
             return float(np.sum(per_row)), float(pred_cpu.shape[0])
         return float(np.sum(sample_weight * per_row)), float(np.sum(sample_weight))
+
+    def plot_config(self, n_features: int) -> dict:
+        pairs = []
+        for target_idx in range(min(4, self.prediction_dim)):
+            feature_idx = target_idx % max(n_features, 1)
+            pairs.append((feature_idx, target_idx))
+        return {
+            "mode": "feature_target_mean",
+            "pairs": pairs,
+        }
 
 
 def family_from_configs(tree_config: dict, dataset_config: dict):

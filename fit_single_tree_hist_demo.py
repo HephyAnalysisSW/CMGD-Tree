@@ -5,7 +5,7 @@ import ast
 
 from gpu_single_tree_trainer import GpuSingleTreeTrainer
 from normal_identity_family import family_from_configs
-from plot_feature_ratios import make_feature_weighted_hist_plots
+from plot_feature_ratios import make_family_diagnostic_plots
 
 
 TREE_CONFIG = {
@@ -153,7 +153,7 @@ if __name__ == "__main__":
         print()
         print("Tree:")
         trained_tree.print_tree()
-        make_feature_weighted_hist_plots(
+        make_family_diagnostic_plots(
             training_id=TRAINING_CONFIG.get("plot_training_id"),
             provider_class=FAMILY.provider_class,
             provider_kwargs=provider_kwargs,
@@ -162,8 +162,8 @@ if __name__ == "__main__":
                 predict_method=TRAINING_CONFIG.get("predict_method"),
                 gpu_predictor=lambda batch: TRAINER.predict_batch(trained_tree, x=batch),
             ),
-            n_features=DATASET_CONFIG.get("n_features"),
             n_classes=DATASET_CONFIG.get("n_classes"),
+            plot_config=FAMILY.plot_config(DATASET_CONFIG.get("n_features")),
             n_bins=TRAINING_CONFIG.get("plot_bins"),
         )
         print()
