@@ -42,8 +42,8 @@ def _plot_class_density(
     n_bins: int,
     feature_indices: list[int],
 ):
-    pred_all = np.clip(pred_all, 1e-8, None)
-    pred_all /= pred_all.sum(axis=1, keepdims=True)
+    truth_all = np.clip(y_all.astype(np.float64, copy=False), 0.0, None)
+    pred_all = np.clip(pred_all, 0.0, None)
     cmap = plt.get_cmap("tab10")
     class_colors = [cmap(c % 10) for c in range(n_classes)]
 
@@ -53,16 +53,20 @@ def _plot_class_density(
 
         for c in range(n_classes):
             color = class_colors[c]
-            truth_mask = y_all[:, c] > 0.5
+            truth_weight = truth_all[:, c]
+            pred_weight = pred_all[:, c]
+            if np.sum(truth_weight) <= 0.0 and np.sum(pred_weight) <= 0.0:
+                continue
             ax.hist(
-                xj[truth_mask],
+                xj,
                 bins=n_bins,
                 density=True,
                 histtype="step",
                 linestyle="--",
                 linewidth=2.0,
                 color=color,
-                label=f"class {c} truth",
+                weights=truth_weight if np.sum(truth_weight) > 0.0 else None,
+                label=f"target {c} truth-weighted",
             )
             ax.hist(
                 xj,
@@ -71,8 +75,8 @@ def _plot_class_density(
                 histtype="step",
                 linewidth=2.0,
                 color=color,
-                weights=pred_all[:, c],
-                label=f"all -> class {c} weighted",
+                weights=pred_weight if np.sum(pred_weight) > 0.0 else None,
+                label=f"target {c} pred-weighted",
             )
 
         ax.set_xlabel(f"feature {j}")
@@ -144,6 +148,19 @@ def make_family_diagnostic_plots(
     out_dir = Path("plots") / training_id
     out_dir.mkdir(parents=True, exist_ok=True)
     x_all, y_all, pred_all = _collect_batches(provider_class, provider_kwargs, predictor)
+
+    if "modes" in plot_config:
+        for sub_config in plot_config["modes"]:
+            make_family_diagnostic_plots(
+                training_id=training_id,
+                provider_class=provider_class,
+                provider_kwargs=provider_kwargs,
+                predictor=predictor,
+                n_classes=n_classes,
+                plot_config=sub_config,
+                n_bins=n_bins,
+            )
+        return
 
     if plot_config.get("mode") == "class_density":
         _plot_class_density(

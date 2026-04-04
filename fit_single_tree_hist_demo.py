@@ -34,6 +34,7 @@ DATASET_CONFIG = {
 TRAINING_CONFIG = {
     "plot_training_id": "single_tree_demo",
     "plot_bins": 80,
+    "plot_mode": "all",
     "threads_per_block": 128,
     "predict_method": "cpu",
 }
@@ -163,7 +164,10 @@ if __name__ == "__main__":
                 gpu_predictor=lambda batch: TRAINER.predict_batch(trained_tree, x=batch),
             ),
             n_classes=DATASET_CONFIG.get("n_classes"),
-            plot_config=FAMILY.plot_config(DATASET_CONFIG.get("n_features")),
+            plot_config=FAMILY.plot_config(
+                n_features=DATASET_CONFIG.get("n_features"),
+                plot_mode=TRAINING_CONFIG.get("plot_mode"),
+            ),
             n_bins=TRAINING_CONFIG.get("plot_bins"),
         )
         print()

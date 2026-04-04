@@ -234,18 +234,34 @@ class NormalIdentityFamily:
         return pred_cpu
 
     def plot_config(self, n_features: int, plot_mode: str = "auto") -> dict:
+        mean_pairs = [
+            (feature_idx, target_idx)
+            for feature_idx in range(n_features)
+            for target_idx in range(self.prediction_dim)
+        ]
+        if plot_mode == "auto":
+            plot_mode = "all"
+        if plot_mode == "all":
+            return {
+                "modes": [
+                    {
+                        "mode": "feature_target_mean",
+                        "pairs": mean_pairs,
+                    },
+                    {
+                        "mode": "class_density",
+                        "feature_indices": list(range(n_features)),
+                    },
+                ]
+            }
         if plot_mode == "feature_target_mean":
-            pairs = []
-            for target_idx in range(min(4, self.prediction_dim)):
-                feature_idx = target_idx % max(n_features, 1)
-                pairs.append((feature_idx, target_idx))
             return {
                 "mode": "feature_target_mean",
-                "pairs": pairs,
+                "pairs": mean_pairs,
             }
         return {
             "mode": "class_density",
-            "feature_indices": list(range(min(4, n_features))),
+            "feature_indices": list(range(min(6, n_features))),
         }
 
 
@@ -327,10 +343,26 @@ class PoissonFamily:
         return float(np.sum(sample_weight * per_row)), float(np.sum(sample_weight))
 
     def plot_config(self, n_features: int, plot_mode: str = "auto") -> dict:
-        pairs = []
-        for target_idx in range(min(4, self.prediction_dim)):
-            feature_idx = target_idx % max(n_features, 1)
-            pairs.append((feature_idx, target_idx))
+        pairs = [
+            (feature_idx, target_idx)
+            for feature_idx in range(n_features)
+            for target_idx in range(self.prediction_dim)
+        ]
+        if plot_mode == "auto":
+            plot_mode = "all"
+        if plot_mode == "all":
+            return {
+                "modes": [
+                    {
+                        "mode": "feature_target_mean",
+                        "pairs": pairs,
+                    },
+                    {
+                        "mode": "class_density",
+                        "feature_indices": list(range(n_features)),
+                    }
+                ]
+            }
         return {
             "mode": "feature_target_mean",
             "pairs": pairs,
