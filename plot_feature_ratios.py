@@ -35,7 +35,12 @@ def make_feature_weighted_hist_plots(
     y_batches = []
     pred_batches = []
 
-    for x_cpu, y_cpu in provider_class(**provider_kwargs):
+    for batch in provider_class(**provider_kwargs):
+        if hasattr(batch, "x"):
+            x_cpu = batch.x
+            y_cpu = batch.y
+        else:
+            x_cpu, y_cpu = batch
         pred_cpu = predictor(x_cpu)
         x_batches.append(np.asarray(x_cpu, dtype=np.float32))
         y_batches.append(np.asarray(y_cpu, dtype=np.float32))
