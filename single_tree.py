@@ -10,7 +10,6 @@ from numba import njit
 def _predict_forest_numba(
     x: np.ndarray,
     base_prediction: np.ndarray,
-    learning_rate: float,
     tree_offsets: np.ndarray,
     split_feature: np.ndarray,
     split_threshold: np.ndarray,
@@ -36,7 +35,49 @@ def _predict_forest_numba(
                 else:
                     node = right_child[node]
             for c in range(pred_dim):
-                pred_out[i, c] += learning_rate * leaf_value[node, c]
+                pred_out[i, c] += leaf_value[node, c]
+
+
+@njit(cache=True)
+def _predict_forest_numba_dim4(
+    x: np.ndarray,
+    base_prediction: np.ndarray,
+    tree_offsets: np.ndarray,
+    split_feature: np.ndarray,
+    split_threshold: np.ndarray,
+    left_child: np.ndarray,
+    right_child: np.ndarray,
+    is_leaf: np.ndarray,
+    leaf_value: np.ndarray,
+    pred_out: np.ndarray,
+):
+    n_rows = x.shape[0]
+    n_trees = tree_offsets.shape[0] - 1
+    base0 = base_prediction[0]
+    base1 = base_prediction[1]
+    base2 = base_prediction[2]
+    base3 = base_prediction[3]
+    for i in range(n_rows):
+        pred0 = base0
+        pred1 = base1
+        pred2 = base2
+        pred3 = base3
+        for tree_idx in range(n_trees):
+            node = tree_offsets[tree_idx]
+            while is_leaf[node] == 0:
+                feature = split_feature[node]
+                if x[i, feature] <= split_threshold[node]:
+                    node = left_child[node]
+                else:
+                    node = right_child[node]
+            pred0 += leaf_value[node, 0]
+            pred1 += leaf_value[node, 1]
+            pred2 += leaf_value[node, 2]
+            pred3 += leaf_value[node, 3]
+        pred_out[i, 0] = pred0
+        pred_out[i, 1] = pred1
+        pred_out[i, 2] = pred2
+        pred_out[i, 3] = pred3
 
 
 @dataclass
@@ -221,25 +262,38 @@ class AdditiveEnsemble:
         self._numba_left_child = np.asarray(left_child, dtype=np.int32)
         self._numba_right_child = np.asarray(right_child, dtype=np.int32)
         self._numba_is_leaf = np.asarray(is_leaf, dtype=np.int8)
-        self._numba_leaf_value = np.concatenate(leaf_value, axis=0).astype(np.float32, copy=False)
+        self._numba_leaf_value = (self.learning_rate * np.concatenate(leaf_value, axis=0)).astype(np.float32, copy=False)
 
     def predict_batch_cpu(self, x: np.ndarray, project_prediction, cpu_predictor: str = "index") -> np.ndarray:
         if cpu_predictor == "numba":
             self._ensure_numba_state()
             pred = np.empty((x.shape[0], self.prediction_dim), dtype=np.float32)
-            _predict_forest_numba(
-                x,
-                self.base_prediction,
-                self.learning_rate,
-                self._numba_tree_offsets,
-                self._numba_split_feature,
-                self._numba_split_threshold,
-                self._numba_left_child,
-                self._numba_right_child,
-                self._numba_is_leaf,
-                self._numba_leaf_value,
-                pred,
-            )
+            if self.prediction_dim == 4:
+                _predict_forest_numba_dim4(
+                    x,
+                    self.base_prediction,
+                    self._numba_tree_offsets,
+                    self._numba_split_feature,
+                    self._numba_split_threshold,
+                    self._numba_left_child,
+                    self._numba_right_child,
+                    self._numba_is_leaf,
+                    self._numba_leaf_value,
+                    pred,
+                )
+            else:
+                _predict_forest_numba(
+                    x,
+                    self.base_prediction,
+                    self._numba_tree_offsets,
+                    self._numba_split_feature,
+                    self._numba_split_threshold,
+                    self._numba_left_child,
+                    self._numba_right_child,
+                    self._numba_is_leaf,
+                    self._numba_leaf_value,
+                    pred,
+                )
             return project_prediction(pred)
         pred = np.repeat(self.base_prediction[None, :], x.shape[0], axis=0)
         for tree in self.trees:
