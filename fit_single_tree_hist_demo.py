@@ -12,8 +12,8 @@ TREE_CONFIG = {
     "max_bin": 64,
     "cut_sample_rows": 200000,
     "grow_policy": "depthwise",
-    "max_depth": 4,
-    "max_leaves": 16,
+    "max_depth": 2,
+    "max_leaves": 4,
     "min_samples_leaf": 512,
     "min_split_loss": 1e-3,
     "reg_lambda": 0.0,
@@ -37,6 +37,8 @@ TRAINING_CONFIG = {
     "plot_mode": "all",
     "threads_per_block": 128,
     "predict_method": "cpu",
+    "n_boost_rounds": 2,
+    "learning_rate": 1.0,
 }
 
 CONFIG_GROUPS = {
@@ -126,42 +128,41 @@ def main():
     print("Dataset config:", DATASET_CONFIG)
     print("Training config:", TRAINING_CONFIG)
     print("Family:", FAMILY.name)
-    print("Class weights:", FAMILY.class_weights.tolist())
+    print("Class weights:", None if FAMILY.class_weights is None else FAMILY.class_weights.tolist())
     print(
-        f"Building a single tree with grow_policy={TREE_CONFIG.get('grow_policy')}, "
+        f"Building a boosted tree ensemble with grow_policy={TREE_CONFIG.get('grow_policy')}, "
         f"max_depth={TREE_CONFIG.get('max_depth')}, max_leaves={TREE_CONFIG.get('max_leaves')}, "
-        f"max_bin={TREE_CONFIG.get('max_bin')}"
+        f"max_bin={TREE_CONFIG.get('max_bin')}, rounds={TRAINING_CONFIG.get('n_boost_rounds')}"
     )
 
-    trained_tree, provider_kwargs, train_metric, mean_sum_prob = TRAINER.run(profile=ARGS.profile)
+    model, provider_kwargs, train_metric, mean_sum_prob, loss_history = TRAINER.run(profile=ARGS.profile)
     print()
-    print(f"Built tree with {len(trained_tree.nodes)} nodes and {trained_tree.n_leaves} leaves.")
+    print(f"Built boosted ensemble with {len(model.trees)} trees.")
     print(f"Objective: {FAMILY.name}")
-    print(f"Root score: {trained_tree.root_score:.6f}")
-    print(f"Root objective weight: {trained_tree.root_weight:.6f}")
-    if FAMILY.use_weights:
-        print(f"Final streamed train weighted {FAMILY.monitor_name}: {train_metric:.6f}")
-    else:
-        print(f"Final streamed train {FAMILY.monitor_name}: {train_metric:.6f}")
+    print(f"Initial train {FAMILY.monitor_name}: {loss_history[0]:.6f}")
+    print(f"Final streamed train {FAMILY.monitor_name}: {train_metric:.6f}")
     print(f"Mean sum of class predictions: {mean_sum_prob:.6f}")
     print(f"Prediction method: {TRAINING_CONFIG.get('predict_method')}")
-    return trained_tree, provider_kwargs
+    return model, provider_kwargs
 
 
 if __name__ == "__main__":
-    trained_tree, provider_kwargs = main()
+    model, provider_kwargs = main()
     if ARGS.full_output or not ARGS.profile:
         print()
-        print("Tree:")
-        trained_tree.print_tree()
+        for tree_idx, tree in enumerate(model.trees, start=1):
+            print(f"Tree {tree_idx}:")
+            tree.print_tree()
+            print()
         make_family_diagnostic_plots(
             training_id=TRAINING_CONFIG.get("plot_training_id"),
             provider_class=FAMILY.provider_class,
             provider_kwargs=provider_kwargs,
-            predictor=lambda x: trained_tree.predict_batch(
+            predictor=lambda x: model.predict_batch(
                 x,
                 predict_method=TRAINING_CONFIG.get("predict_method"),
-                gpu_predictor=lambda batch: TRAINER.predict_batch(trained_tree, x=batch),
+                gpu_predictor=lambda batch: TRAINER.predict_model_batch(model, batch),
+                project_prediction=FAMILY.project_prediction,
             ),
             n_classes=DATASET_CONFIG.get("n_classes"),
             plot_config=FAMILY.plot_config(

@@ -6,187 +6,6 @@ import numpy as np
 
 
 @dataclass
-class CachedTargetBatch:
-    bins: np.ndarray
-    target_codes: np.ndarray
-    sample_weight: np.ndarray | None = None
-
-
-@dataclass
-class Objective:
-    kind: str
-    name: str
-    class_weights: np.ndarray
-    use_weights: bool
-
-    def leaf_value(self, sum_y: np.ndarray, denominator: float, reg_lambda: float) -> np.ndarray:
-        raise NotImplementedError
-
-    def leaf_score(self, sum_y: np.ndarray, denominator: float, reg_lambda: float) -> float:
-        raise NotImplementedError
-
-    def make_training_batch(self, bins_cpu: np.ndarray, y_cpu: np.ndarray) -> CachedTargetBatch:
-        raise NotImplementedError
-
-    def encode_metric_targets(self, y_cpu: np.ndarray) -> np.ndarray:
-        raise NotImplementedError
-
-    def sample_weight_from_target_codes(self, target_codes: np.ndarray) -> np.ndarray | None:
-        raise NotImplementedError
-
-    def denominator_from_stats(self, target_stat_sum: np.ndarray, count: int) -> float:
-        raise NotImplementedError
-
-    def metric_from_predictions(
-        self,
-        pred_cpu: np.ndarray,
-        target_codes: np.ndarray,
-        sample_weight_cpu: np.ndarray | None = None,
-    ) -> tuple[float, float]:
-        raise NotImplementedError
-
-
-@dataclass
-class MSEObjective(Objective):
-    @classmethod
-    def from_tree_config(cls, tree_config: dict, n_classes: int) -> "MSEObjective":
-        configured = tree_config.get("class_weights")
-        if configured is None:
-            return cls(kind="mse", name="mse", class_weights=np.ones(n_classes, dtype=np.float32), use_weights=False)
-
-        class_weights = np.asarray(configured, dtype=np.float32)
-        if class_weights.shape != (n_classes,):
-            raise ValueError("class_weights must have length n_classes.")
-        if np.any(class_weights < 0.0):
-            raise ValueError("class_weights must be non-negative.")
-        return cls(kind="mse", name="weighted_mse", class_weights=class_weights, use_weights=True)
-
-    def leaf_value(self, sum_y: np.ndarray, denominator: float, reg_lambda: float) -> np.ndarray:
-        return sum_y / (denominator + reg_lambda)
-
-    def leaf_score(self, sum_y: np.ndarray, denominator: float, reg_lambda: float) -> float:
-        if denominator <= 0.0:
-            return -np.inf
-        return float(np.dot(sum_y, sum_y) / (denominator + reg_lambda))
-
-    def encode_metric_targets(self, y_cpu: np.ndarray) -> np.ndarray:
-        return np.argmax(y_cpu, axis=1).astype(np.int16 if y_cpu.shape[1] > 256 else np.uint8, copy=False)
-
-    def sample_weight_from_target_codes(self, target_codes: np.ndarray) -> np.ndarray | None:
-        if not self.use_weights:
-            return None
-        return self.class_weights[target_codes].astype(np.float32, copy=False)
-
-    def make_training_batch(self, bins_cpu: np.ndarray, y_cpu: np.ndarray) -> CachedTargetBatch:
-        target_codes = self.encode_metric_targets(y_cpu)
-        if self.use_weights:
-            return CachedTargetBatch(
-                bins=bins_cpu,
-                target_codes=target_codes.copy(),
-                sample_weight=self.sample_weight_from_target_codes(target_codes),
-            )
-        return CachedTargetBatch(bins=bins_cpu, target_codes=target_codes.copy())
-
-    def denominator_from_stats(self, target_stat_sum: np.ndarray, count: int) -> float:
-        if self.use_weights:
-            return float(np.sum(target_stat_sum))
-        return float(count)
-
-    def metric_from_predictions(
-        self,
-        pred_cpu: np.ndarray,
-        target_codes: np.ndarray,
-        sample_weight_cpu: np.ndarray | None = None,
-    ) -> tuple[float, float]:
-        pred_sq = np.sum(pred_cpu * pred_cpu, axis=1)
-        target_prob = pred_cpu[np.arange(pred_cpu.shape[0]), target_codes]
-        per_row = 1.0 - 2.0 * target_prob + pred_sq
-        if sample_weight_cpu is None:
-            return float(np.sum(per_row)), float(pred_cpu.shape[0])
-        return float(np.sum(sample_weight_cpu * per_row)), float(np.sum(sample_weight_cpu))
-
-
-@dataclass
-class CrossEntropyObjective(Objective):
-    @classmethod
-    def from_tree_config(cls, tree_config: dict, n_classes: int) -> "CrossEntropyObjective":
-        configured = tree_config.get("class_weights")
-        if configured is None:
-            return cls(
-                kind="cross_entropy",
-                name="cross_entropy",
-                class_weights=np.ones(n_classes, dtype=np.float32),
-                use_weights=False,
-            )
-
-        class_weights = np.asarray(configured, dtype=np.float32)
-        if class_weights.shape != (n_classes,):
-            raise ValueError("class_weights must have length n_classes.")
-        if np.any(class_weights < 0.0):
-            raise ValueError("class_weights must be non-negative.")
-        return cls(
-            kind="cross_entropy",
-            name="weighted_cross_entropy",
-            class_weights=class_weights,
-            use_weights=True,
-        )
-
-    def leaf_value(self, sum_y: np.ndarray, denominator: float, reg_lambda: float) -> np.ndarray:
-        if denominator <= 0.0:
-            return np.zeros_like(sum_y, dtype=np.float32)
-        return sum_y / denominator
-
-    def leaf_score(self, sum_y: np.ndarray, denominator: float, reg_lambda: float) -> float:
-        if denominator <= 0.0:
-            return -np.inf
-        positive = sum_y > 0.0
-        return float(np.sum(sum_y[positive] * np.log(sum_y[positive])) - denominator * np.log(denominator))
-
-    def encode_metric_targets(self, y_cpu: np.ndarray) -> np.ndarray:
-        return np.argmax(y_cpu, axis=1).astype(np.int16 if y_cpu.shape[1] > 256 else np.uint8, copy=False)
-
-    def sample_weight_from_target_codes(self, target_codes: np.ndarray) -> np.ndarray | None:
-        if not self.use_weights:
-            return None
-        return self.class_weights[target_codes].astype(np.float32, copy=False)
-
-    def make_training_batch(self, bins_cpu: np.ndarray, y_cpu: np.ndarray) -> CachedTargetBatch:
-        target_codes = self.encode_metric_targets(y_cpu)
-        if self.use_weights:
-            return CachedTargetBatch(
-                bins=bins_cpu,
-                target_codes=target_codes.copy(),
-                sample_weight=self.sample_weight_from_target_codes(target_codes),
-            )
-        return CachedTargetBatch(bins=bins_cpu, target_codes=target_codes.copy())
-
-    def denominator_from_stats(self, target_stat_sum: np.ndarray, count: int) -> float:
-        return float(np.sum(target_stat_sum))
-
-    def metric_from_predictions(
-        self,
-        pred_cpu: np.ndarray,
-        target_codes: np.ndarray,
-        sample_weight_cpu: np.ndarray | None = None,
-    ) -> tuple[float, float]:
-        eps = 1.0e-12
-        target_prob = np.clip(pred_cpu[np.arange(pred_cpu.shape[0]), target_codes], eps, 1.0)
-        per_row = -np.log(target_prob)
-        if sample_weight_cpu is None:
-            return float(np.sum(per_row)), float(pred_cpu.shape[0])
-        return float(np.sum(sample_weight_cpu * per_row)), float(np.sum(sample_weight_cpu))
-
-
-def objective_from_tree_config(tree_config: dict, n_classes: int) -> Objective:
-    objective_name = tree_config.get("objective", "mse")
-    if objective_name == "mse":
-        return MSEObjective.from_tree_config(tree_config, n_classes)
-    if objective_name == "cross_entropy":
-        return CrossEntropyObjective.from_tree_config(tree_config, n_classes)
-    raise ValueError("objective must be 'mse' or 'cross_entropy'.")
-
-
-@dataclass
 class Node:
     node_id: int
     depth: int
@@ -207,8 +26,8 @@ class Node:
 
 
 class SingleTree:
-    def __init__(self, n_classes: int):
-        self.n_classes = n_classes
+    def __init__(self, prediction_dim: int):
+        self.prediction_dim = prediction_dim
         self.nodes: list[Node] = [Node(node_id=0, depth=0)]
         self.n_leaves = 1
         self.next_node_id = 1
@@ -234,20 +53,19 @@ class SingleTree:
         return node_ids
 
     def finalize_prediction_state(self):
-        self.leaf_value_cpu = np.zeros((len(self.nodes), self.n_classes), dtype=np.float32)
+        self.leaf_value_cpu = np.zeros((len(self.nodes), self.prediction_dim), dtype=np.float32)
         self.split_feature_cpu = np.array([node.split_feature for node in self.nodes], dtype=np.int32)
         self.split_bin_cpu = np.array([node.split_bin for node in self.nodes], dtype=np.int32)
         self.split_threshold_cpu = np.array([node.split_threshold for node in self.nodes], dtype=np.float32)
         self.left_child_cpu = np.array([node.left_child for node in self.nodes], dtype=np.int32)
         self.right_child_cpu = np.array([node.right_child for node in self.nodes], dtype=np.int32)
         self.is_leaf_cpu = np.array([1 if node.is_leaf else 0 for node in self.nodes], dtype=np.int8)
-
         for node in self.nodes:
             if node.value is not None:
                 self.leaf_value_cpu[node.node_id] = node.value
 
     def predict_batch_cpu(self, x: np.ndarray) -> np.ndarray:
-        pred = np.empty((x.shape[0], self.n_classes), dtype=np.float32)
+        pred = np.empty((x.shape[0], self.prediction_dim), dtype=np.float32)
         pending = [(0, np.arange(x.shape[0], dtype=np.int32))]
         while pending:
             node_id, row_idx = pending.pop()
@@ -263,12 +81,7 @@ class SingleTree:
             pending.append((self.left_child_cpu[node_id], row_idx[left_mask]))
         return pred
 
-    def predict_batch(
-        self,
-        x: np.ndarray,
-        predict_method: str = "cpu",
-        gpu_predictor=None,
-    ) -> np.ndarray:
+    def predict_batch(self, x: np.ndarray, predict_method: str = "cpu", gpu_predictor=None) -> np.ndarray:
         if predict_method == "gpu":
             if gpu_predictor is None:
                 raise ValueError("gpu_predictor is required for GPU prediction.")
@@ -284,7 +97,6 @@ class SingleTree:
                 + f"value={np.array2string(node.value, precision=3, suppress_small=True)}"
             )
             return
-
         print(
             indent
             + f"node id={node.node_id} depth={node.depth} feature={node.split_feature} "
@@ -292,3 +104,31 @@ class SingleTree:
         )
         self.print_tree(node.left_child, indent + "  ")
         self.print_tree(node.right_child, indent + "  ")
+
+
+class AdditiveEnsemble:
+    def __init__(self, prediction_dim: int, base_prediction: np.ndarray, learning_rate: float):
+        self.prediction_dim = prediction_dim
+        self.base_prediction = np.asarray(base_prediction, dtype=np.float32)
+        self.learning_rate = float(learning_rate)
+        self.trees: list[SingleTree] = []
+
+    def add_tree(self, tree: SingleTree):
+        self.trees.append(tree)
+
+    def predict_batch_cpu(self, x: np.ndarray, project_prediction) -> np.ndarray:
+        pred = np.repeat(self.base_prediction[None, :], x.shape[0], axis=0)
+        for tree in self.trees:
+            pred += self.learning_rate * tree.predict_batch_cpu(x)
+        return project_prediction(pred)
+
+    def predict_batch(self, x: np.ndarray, predict_method: str = "cpu", gpu_predictor=None, project_prediction=None) -> np.ndarray:
+        if predict_method == "gpu":
+            if gpu_predictor is None:
+                raise ValueError("gpu_predictor is required for GPU prediction.")
+            pred = gpu_predictor(x)
+        else:
+            pred = self.predict_batch_cpu(x, project_prediction)
+        if project_prediction is None or predict_method != "gpu":
+            return pred
+        return project_prediction(pred)

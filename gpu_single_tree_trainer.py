@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import dataclass
 
 import cupy as cp
 import numpy as np
 from numba import cuda
 
-from normal_identity_family import CachedTrainingBatch
-from single_tree import Node, SingleTree
+from single_tree import AdditiveEnsemble, Node, SingleTree
 
 try:
     import psutil
@@ -62,34 +62,7 @@ def route_rows_to_candidate_slots(
 
 
 @cuda.jit
-def build_candidate_histograms_unweighted(bins, cls, row_slot, hist_count, hist_sum):
-    i = cuda.grid(1)
-    if i < bins.shape[0]:
-        slot = row_slot[i]
-        if slot >= 0:
-            cls_i = cls[i]
-            for f in range(bins.shape[1]):
-                b = bins[i, f]
-                cuda.atomic.add(hist_count, (slot, f, b), 1)
-                cuda.atomic.add(hist_sum, (slot, f, b, cls_i), 1.0)
-
-
-@cuda.jit
-def build_candidate_histograms_weighted(bins, cls, sample_weight, row_slot, hist_count, hist_sum):
-    i = cuda.grid(1)
-    if i < bins.shape[0]:
-        slot = row_slot[i]
-        if slot >= 0:
-            cls_i = cls[i]
-            weight = sample_weight[i]
-            for f in range(bins.shape[1]):
-                b = bins[i, f]
-                cuda.atomic.add(hist_count, (slot, f, b), 1)
-                cuda.atomic.add(hist_sum, (slot, f, b, cls_i), weight)
-
-
-@cuda.jit
-def build_candidate_histograms_dense_unweighted(bins, target_stats, row_slot, hist_count, hist_sum):
+def build_candidate_histograms_unweighted(bins, target_stats, row_slot, hist_count, hist_weight, hist_sum):
     i = cuda.grid(1)
     if i < bins.shape[0]:
         slot = row_slot[i]
@@ -97,12 +70,13 @@ def build_candidate_histograms_dense_unweighted(bins, target_stats, row_slot, hi
             for f in range(bins.shape[1]):
                 b = bins[i, f]
                 cuda.atomic.add(hist_count, (slot, f, b), 1)
+                cuda.atomic.add(hist_weight, (slot, f, b), 1.0)
                 for c in range(target_stats.shape[1]):
                     cuda.atomic.add(hist_sum, (slot, f, b, c), target_stats[i, c])
 
 
 @cuda.jit
-def build_candidate_histograms_dense_weighted(bins, target_stats, sample_weight, row_slot, hist_count, hist_sum):
+def build_candidate_histograms_weighted(bins, target_stats, sample_weight, row_slot, hist_count, hist_weight, hist_sum):
     i = cuda.grid(1)
     if i < bins.shape[0]:
         slot = row_slot[i]
@@ -111,432 +85,127 @@ def build_candidate_histograms_dense_weighted(bins, target_stats, sample_weight,
             for f in range(bins.shape[1]):
                 b = bins[i, f]
                 cuda.atomic.add(hist_count, (slot, f, b), 1)
+                cuda.atomic.add(hist_weight, (slot, f, b), weight)
                 for c in range(target_stats.shape[1]):
                     cuda.atomic.add(hist_sum, (slot, f, b, c), weight * target_stats[i, c])
 
 
 @cuda.jit
-def evaluate_feature_splits_unweighted(
+def evaluate_feature_splits(
     hist_count,
+    hist_weight,
     hist_sum,
     min_samples_leaf,
     reg_lambda,
     slot_parent_count,
+    slot_parent_weight,
     slot_parent_sum,
     feature_best_gain,
     feature_best_bin,
     feature_best_left_count,
     feature_best_right_count,
+    feature_best_left_weight,
+    feature_best_right_weight,
     feature_best_left_sum,
     feature_best_right_sum,
 ):
     slot, feature = cuda.grid(2)
-    if slot < hist_count.shape[0] and feature < hist_count.shape[1]:
-        parent_count = 0
-        parent_score_num = 0.0
+    if slot >= hist_count.shape[0] or feature >= hist_count.shape[1]:
+        return
 
-        for b in range(hist_count.shape[2]):
-            parent_count += hist_count[slot, feature, b]
+    parent_count = 0
+    parent_weight = 0.0
+    for b in range(hist_count.shape[2]):
+        parent_count += hist_count[slot, feature, b]
+        parent_weight += hist_weight[slot, feature, b]
 
-        if feature == 0:
-            slot_parent_count[slot] = parent_count
-            for c in range(hist_sum.shape[3]):
-                s = 0.0
-                for b in range(hist_sum.shape[2]):
-                    s += hist_sum[slot, feature, b, c]
-                slot_parent_sum[slot, c] = s
-
-        if parent_count <= 0:
-            feature_best_gain[slot, feature] = -1.0e30
-            feature_best_bin[slot, feature] = -1
-            feature_best_left_count[slot, feature] = 0
-            feature_best_right_count[slot, feature] = 0
-            for c in range(hist_sum.shape[3]):
-                feature_best_left_sum[slot, feature, c] = 0.0
-                feature_best_right_sum[slot, feature, c] = 0.0
-            return
-
-        parent_sum = cuda.local.array(16, dtype=np.float32)
-        left_sum = cuda.local.array(16, dtype=np.float32)
-        best_left_sum = cuda.local.array(16, dtype=np.float32)
-        best_right_sum = cuda.local.array(16, dtype=np.float32)
-
+    if feature == 0:
+        slot_parent_count[slot] = parent_count
+        slot_parent_weight[slot] = parent_weight
         for c in range(hist_sum.shape[3]):
             s = 0.0
             for b in range(hist_sum.shape[2]):
                 s += hist_sum[slot, feature, b, c]
-            parent_sum[c] = s
-            left_sum[c] = 0.0
-            parent_score_num += s * s
+            slot_parent_sum[slot, c] = s
 
-        parent_score = parent_score_num / (parent_count + reg_lambda)
-        left_count = 0
-        best_gain = -1.0e30
-        best_bin = -1
-        best_left_count = 0
-        best_right_count = 0
-
-        for split_bin in range(hist_count.shape[2] - 1):
-            left_count += hist_count[slot, feature, split_bin]
-            right_count = parent_count - left_count
-
-            for c in range(hist_sum.shape[3]):
-                left_sum[c] += hist_sum[slot, feature, split_bin, c]
-
-            if left_count < min_samples_leaf or right_count < min_samples_leaf:
-                continue
-
-            left_score_num = 0.0
-            right_score_num = 0.0
-            for c in range(hist_sum.shape[3]):
-                right_sum_c = parent_sum[c] - left_sum[c]
-                left_score_num += left_sum[c] * left_sum[c]
-                right_score_num += right_sum_c * right_sum_c
-
-            gain = (
-                left_score_num / (left_count + reg_lambda)
-                + right_score_num / (right_count + reg_lambda)
-                - parent_score
-            )
-
-            if gain > best_gain:
-                best_gain = gain
-                best_bin = split_bin
-                best_left_count = left_count
-                best_right_count = right_count
-                for c in range(hist_sum.shape[3]):
-                    best_left_sum[c] = left_sum[c]
-                    best_right_sum[c] = parent_sum[c] - left_sum[c]
-
-        feature_best_gain[slot, feature] = best_gain
-        feature_best_bin[slot, feature] = best_bin
-        feature_best_left_count[slot, feature] = best_left_count
-        feature_best_right_count[slot, feature] = best_right_count
+    if parent_count <= 0 or parent_weight <= 0.0:
+        feature_best_gain[slot, feature] = -1.0e30
+        feature_best_bin[slot, feature] = -1
+        feature_best_left_count[slot, feature] = 0
+        feature_best_right_count[slot, feature] = 0
+        feature_best_left_weight[slot, feature] = 0.0
+        feature_best_right_weight[slot, feature] = 0.0
         for c in range(hist_sum.shape[3]):
-            feature_best_left_sum[slot, feature, c] = best_left_sum[c]
-            feature_best_right_sum[slot, feature, c] = best_right_sum[c]
+            feature_best_left_sum[slot, feature, c] = 0.0
+            feature_best_right_sum[slot, feature, c] = 0.0
+        return
 
+    parent_sum = cuda.local.array(16, dtype=np.float32)
+    left_sum = cuda.local.array(16, dtype=np.float32)
+    best_left_sum = cuda.local.array(16, dtype=np.float32)
+    best_right_sum = cuda.local.array(16, dtype=np.float32)
+    parent_score_num = 0.0
+    for c in range(hist_sum.shape[3]):
+        s = 0.0
+        for b in range(hist_sum.shape[2]):
+            s += hist_sum[slot, feature, b, c]
+        parent_sum[c] = s
+        left_sum[c] = 0.0
+        parent_score_num += s * s
+    parent_score = parent_score_num / (parent_weight + reg_lambda)
 
-@cuda.jit
-def evaluate_feature_splits_weighted(
-    hist_count,
-    hist_sum,
-    min_samples_leaf,
-    reg_lambda,
-    slot_parent_count,
-    slot_parent_sum,
-    feature_best_gain,
-    feature_best_bin,
-    feature_best_left_count,
-    feature_best_right_count,
-    feature_best_left_sum,
-    feature_best_right_sum,
-):
-    slot, feature = cuda.grid(2)
-    if slot < hist_count.shape[0] and feature < hist_count.shape[1]:
-        parent_count = 0
-        parent_score_num = 0.0
+    left_count = 0
+    left_weight = 0.0
+    best_gain = -1.0e30
+    best_bin = -1
+    best_left_count = 0
+    best_right_count = 0
+    best_left_weight = 0.0
+    best_right_weight = 0.0
 
-        for b in range(hist_count.shape[2]):
-            parent_count += hist_count[slot, feature, b]
+    for split_bin in range(hist_count.shape[2] - 1):
+        left_count += hist_count[slot, feature, split_bin]
+        left_weight += hist_weight[slot, feature, split_bin]
+        right_count = parent_count - left_count
+        right_weight = parent_weight - left_weight
 
-        if feature == 0:
-            slot_parent_count[slot] = parent_count
-            for c in range(hist_sum.shape[3]):
-                s = 0.0
-                for b in range(hist_sum.shape[2]):
-                    s += hist_sum[slot, feature, b, c]
-                slot_parent_sum[slot, c] = s
-
-        if parent_count <= 0:
-            feature_best_gain[slot, feature] = -1.0e30
-            feature_best_bin[slot, feature] = -1
-            feature_best_left_count[slot, feature] = 0
-            feature_best_right_count[slot, feature] = 0
-            for c in range(hist_sum.shape[3]):
-                feature_best_left_sum[slot, feature, c] = 0.0
-                feature_best_right_sum[slot, feature, c] = 0.0
-            return
-
-        parent_sum = cuda.local.array(16, dtype=np.float32)
-        left_sum = cuda.local.array(16, dtype=np.float32)
-        best_left_sum = cuda.local.array(16, dtype=np.float32)
-        best_right_sum = cuda.local.array(16, dtype=np.float32)
-
-        parent_weight = 0.0
         for c in range(hist_sum.shape[3]):
-            s = 0.0
-            for b in range(hist_sum.shape[2]):
-                s += hist_sum[slot, feature, b, c]
-            parent_sum[c] = s
-            left_sum[c] = 0.0
-            parent_score_num += s * s
-            parent_weight += s
+            left_sum[c] += hist_sum[slot, feature, split_bin, c]
 
-        parent_score = parent_score_num / (parent_weight + reg_lambda)
-        left_count = 0
-        best_gain = -1.0e30
-        best_bin = -1
-        best_left_count = 0
-        best_right_count = 0
+        if left_count < min_samples_leaf or right_count < min_samples_leaf or left_weight <= 0.0 or right_weight <= 0.0:
+            continue
 
-        for split_bin in range(hist_count.shape[2] - 1):
-            left_count += hist_count[slot, feature, split_bin]
-            right_count = parent_count - left_count
-
-            for c in range(hist_sum.shape[3]):
-                left_sum[c] += hist_sum[slot, feature, split_bin, c]
-
-            left_weight = 0.0
-            for c in range(hist_sum.shape[3]):
-                left_weight += left_sum[c]
-            right_weight = parent_weight - left_weight
-
-            if left_count < min_samples_leaf or right_count < min_samples_leaf or left_weight <= 0.0 or right_weight <= 0.0:
-                continue
-
-            left_score_num = 0.0
-            right_score_num = 0.0
-            for c in range(hist_sum.shape[3]):
-                right_sum_c = parent_sum[c] - left_sum[c]
-                left_score_num += left_sum[c] * left_sum[c]
-                right_score_num += right_sum_c * right_sum_c
-
-            gain = (
-                left_score_num / (left_weight + reg_lambda)
-                + right_score_num / (right_weight + reg_lambda)
-                - parent_score
-            )
-
-            if gain > best_gain:
-                best_gain = gain
-                best_bin = split_bin
-                best_left_count = left_count
-                best_right_count = right_count
-                for c in range(hist_sum.shape[3]):
-                    best_left_sum[c] = left_sum[c]
-                    best_right_sum[c] = parent_sum[c] - left_sum[c]
-
-        feature_best_gain[slot, feature] = best_gain
-        feature_best_bin[slot, feature] = best_bin
-        feature_best_left_count[slot, feature] = best_left_count
-        feature_best_right_count[slot, feature] = best_right_count
+        left_score_num = 0.0
+        right_score_num = 0.0
         for c in range(hist_sum.shape[3]):
-            feature_best_left_sum[slot, feature, c] = best_left_sum[c]
-            feature_best_right_sum[slot, feature, c] = best_right_sum[c]
-
-
-@cuda.jit
-def evaluate_feature_splits_cross_entropy_unweighted(
-    hist_count,
-    hist_sum,
-    min_samples_leaf,
-    reg_lambda,
-    slot_parent_count,
-    slot_parent_sum,
-    feature_best_gain,
-    feature_best_bin,
-    feature_best_left_count,
-    feature_best_right_count,
-    feature_best_left_sum,
-    feature_best_right_sum,
-):
-    slot, feature = cuda.grid(2)
-    if slot < hist_count.shape[0] and feature < hist_count.shape[1]:
-        parent_count = 0
-        for b in range(hist_count.shape[2]):
-            parent_count += hist_count[slot, feature, b]
-
-        if feature == 0:
-            slot_parent_count[slot] = parent_count
+            right_sum_c = parent_sum[c] - left_sum[c]
+            left_score_num += left_sum[c] * left_sum[c]
+            right_score_num += right_sum_c * right_sum_c
+        gain = (
+            left_score_num / (left_weight + reg_lambda)
+            + right_score_num / (right_weight + reg_lambda)
+            - parent_score
+        )
+        if gain > best_gain:
+            best_gain = gain
+            best_bin = split_bin
+            best_left_count = left_count
+            best_right_count = right_count
+            best_left_weight = left_weight
+            best_right_weight = right_weight
             for c in range(hist_sum.shape[3]):
-                s = 0.0
-                for b in range(hist_sum.shape[2]):
-                    s += hist_sum[slot, feature, b, c]
-                slot_parent_sum[slot, c] = s
+                best_left_sum[c] = left_sum[c]
+                best_right_sum[c] = parent_sum[c] - left_sum[c]
 
-        if parent_count <= 0:
-            feature_best_gain[slot, feature] = -1.0e30
-            feature_best_bin[slot, feature] = -1
-            feature_best_left_count[slot, feature] = 0
-            feature_best_right_count[slot, feature] = 0
-            for c in range(hist_sum.shape[3]):
-                feature_best_left_sum[slot, feature, c] = 0.0
-                feature_best_right_sum[slot, feature, c] = 0.0
-            return
-
-        parent_sum = cuda.local.array(16, dtype=np.float32)
-        left_sum = cuda.local.array(16, dtype=np.float32)
-        best_left_sum = cuda.local.array(16, dtype=np.float32)
-        best_right_sum = cuda.local.array(16, dtype=np.float32)
-        parent_score = -float(parent_count) * np.log(float(parent_count))
-        for c in range(hist_sum.shape[3]):
-            s = 0.0
-            for b in range(hist_sum.shape[2]):
-                s += hist_sum[slot, feature, b, c]
-            parent_sum[c] = s
-            left_sum[c] = 0.0
-            if s > 0.0:
-                parent_score += s * np.log(s)
-
-        left_count = 0
-        best_gain = -1.0e30
-        best_bin = -1
-        best_left_count = 0
-        best_right_count = 0
-
-        for split_bin in range(hist_count.shape[2] - 1):
-            left_count += hist_count[slot, feature, split_bin]
-            right_count = parent_count - left_count
-
-            for c in range(hist_sum.shape[3]):
-                left_sum[c] += hist_sum[slot, feature, split_bin, c]
-
-            if left_count < min_samples_leaf or right_count < min_samples_leaf:
-                continue
-
-            left_score = -float(left_count) * np.log(float(left_count))
-            right_score = -float(right_count) * np.log(float(right_count))
-            for c in range(hist_sum.shape[3]):
-                right_sum_c = parent_sum[c] - left_sum[c]
-                if left_sum[c] > 0.0:
-                    left_score += left_sum[c] * np.log(left_sum[c])
-                if right_sum_c > 0.0:
-                    right_score += right_sum_c * np.log(right_sum_c)
-
-            gain = left_score + right_score - parent_score
-            if gain > best_gain:
-                best_gain = gain
-                best_bin = split_bin
-                best_left_count = left_count
-                best_right_count = right_count
-                for c in range(hist_sum.shape[3]):
-                    best_left_sum[c] = left_sum[c]
-                    best_right_sum[c] = parent_sum[c] - left_sum[c]
-
-        feature_best_gain[slot, feature] = best_gain
-        feature_best_bin[slot, feature] = best_bin
-        feature_best_left_count[slot, feature] = best_left_count
-        feature_best_right_count[slot, feature] = best_right_count
-        for c in range(hist_sum.shape[3]):
-            feature_best_left_sum[slot, feature, c] = best_left_sum[c]
-            feature_best_right_sum[slot, feature, c] = best_right_sum[c]
-
-
-@cuda.jit
-def evaluate_feature_splits_cross_entropy_weighted(
-    hist_count,
-    hist_sum,
-    min_samples_leaf,
-    reg_lambda,
-    slot_parent_count,
-    slot_parent_sum,
-    feature_best_gain,
-    feature_best_bin,
-    feature_best_left_count,
-    feature_best_right_count,
-    feature_best_left_sum,
-    feature_best_right_sum,
-):
-    slot, feature = cuda.grid(2)
-    if slot < hist_count.shape[0] and feature < hist_count.shape[1]:
-        parent_count = 0
-        for b in range(hist_count.shape[2]):
-            parent_count += hist_count[slot, feature, b]
-
-        if feature == 0:
-            slot_parent_count[slot] = parent_count
-            for c in range(hist_sum.shape[3]):
-                s = 0.0
-                for b in range(hist_sum.shape[2]):
-                    s += hist_sum[slot, feature, b, c]
-                slot_parent_sum[slot, c] = s
-
-        if parent_count <= 0:
-            feature_best_gain[slot, feature] = -1.0e30
-            feature_best_bin[slot, feature] = -1
-            feature_best_left_count[slot, feature] = 0
-            feature_best_right_count[slot, feature] = 0
-            for c in range(hist_sum.shape[3]):
-                feature_best_left_sum[slot, feature, c] = 0.0
-                feature_best_right_sum[slot, feature, c] = 0.0
-            return
-
-        parent_sum = cuda.local.array(16, dtype=np.float32)
-        left_sum = cuda.local.array(16, dtype=np.float32)
-        best_left_sum = cuda.local.array(16, dtype=np.float32)
-        best_right_sum = cuda.local.array(16, dtype=np.float32)
-        parent_weight = 0.0
-        for c in range(hist_sum.shape[3]):
-            s = 0.0
-            for b in range(hist_sum.shape[2]):
-                s += hist_sum[slot, feature, b, c]
-            parent_sum[c] = s
-            left_sum[c] = 0.0
-            parent_weight += s
-
-        if parent_weight <= 0.0:
-            feature_best_gain[slot, feature] = -1.0e30
-            feature_best_bin[slot, feature] = -1
-            feature_best_left_count[slot, feature] = 0
-            feature_best_right_count[slot, feature] = 0
-            for c in range(hist_sum.shape[3]):
-                feature_best_left_sum[slot, feature, c] = 0.0
-                feature_best_right_sum[slot, feature, c] = 0.0
-            return
-
-        parent_score = -parent_weight * np.log(parent_weight)
-        for c in range(hist_sum.shape[3]):
-            if parent_sum[c] > 0.0:
-                parent_score += parent_sum[c] * np.log(parent_sum[c])
-
-        left_count = 0
-        best_gain = -1.0e30
-        best_bin = -1
-        best_left_count = 0
-        best_right_count = 0
-
-        for split_bin in range(hist_count.shape[2] - 1):
-            left_count += hist_count[slot, feature, split_bin]
-            right_count = parent_count - left_count
-
-            for c in range(hist_sum.shape[3]):
-                left_sum[c] += hist_sum[slot, feature, split_bin, c]
-
-            left_weight = 0.0
-            for c in range(hist_sum.shape[3]):
-                left_weight += left_sum[c]
-            right_weight = parent_weight - left_weight
-
-            if left_count < min_samples_leaf or right_count < min_samples_leaf or left_weight <= 0.0 or right_weight <= 0.0:
-                continue
-
-            left_score = -left_weight * np.log(left_weight)
-            right_score = -right_weight * np.log(right_weight)
-            for c in range(hist_sum.shape[3]):
-                right_sum_c = parent_sum[c] - left_sum[c]
-                if left_sum[c] > 0.0:
-                    left_score += left_sum[c] * np.log(left_sum[c])
-                if right_sum_c > 0.0:
-                    right_score += right_sum_c * np.log(right_sum_c)
-
-            gain = left_score + right_score - parent_score
-            if gain > best_gain:
-                best_gain = gain
-                best_bin = split_bin
-                best_left_count = left_count
-                best_right_count = right_count
-                for c in range(hist_sum.shape[3]):
-                    best_left_sum[c] = left_sum[c]
-                    best_right_sum[c] = parent_sum[c] - left_sum[c]
-
-        feature_best_gain[slot, feature] = best_gain
-        feature_best_bin[slot, feature] = best_bin
-        feature_best_left_count[slot, feature] = best_left_count
-        feature_best_right_count[slot, feature] = best_right_count
-        for c in range(hist_sum.shape[3]):
-            feature_best_left_sum[slot, feature, c] = best_left_sum[c]
-            feature_best_right_sum[slot, feature, c] = best_right_sum[c]
+    feature_best_gain[slot, feature] = best_gain
+    feature_best_bin[slot, feature] = best_bin
+    feature_best_left_count[slot, feature] = best_left_count
+    feature_best_right_count[slot, feature] = best_right_count
+    feature_best_left_weight[slot, feature] = best_left_weight
+    feature_best_right_weight[slot, feature] = best_right_weight
+    for c in range(hist_sum.shape[3]):
+        feature_best_left_sum[slot, feature, c] = best_left_sum[c]
+        feature_best_right_sum[slot, feature, c] = best_right_sum[c]
 
 
 @cuda.jit
@@ -545,6 +214,8 @@ def reduce_feature_bests(
     feature_best_bin,
     feature_best_left_count,
     feature_best_right_count,
+    feature_best_left_weight,
+    feature_best_right_weight,
     feature_best_left_sum,
     feature_best_right_sum,
     slot_best_gain,
@@ -552,6 +223,8 @@ def reduce_feature_bests(
     slot_best_bin,
     slot_best_left_count,
     slot_best_right_count,
+    slot_best_left_weight,
+    slot_best_right_weight,
     slot_best_left_sum,
     slot_best_right_sum,
 ):
@@ -562,7 +235,8 @@ def reduce_feature_bests(
         best_bin = -1
         best_left_count = 0
         best_right_count = 0
-
+        best_left_weight = 0.0
+        best_right_weight = 0.0
         for feature in range(feature_best_gain.shape[1]):
             gain = feature_best_gain[slot, feature]
             if gain > best_gain:
@@ -571,15 +245,18 @@ def reduce_feature_bests(
                 best_bin = feature_best_bin[slot, feature]
                 best_left_count = feature_best_left_count[slot, feature]
                 best_right_count = feature_best_right_count[slot, feature]
+                best_left_weight = feature_best_left_weight[slot, feature]
+                best_right_weight = feature_best_right_weight[slot, feature]
                 for c in range(feature_best_left_sum.shape[2]):
                     slot_best_left_sum[slot, c] = feature_best_left_sum[slot, feature, c]
                     slot_best_right_sum[slot, c] = feature_best_right_sum[slot, feature, c]
-
         slot_best_gain[slot] = best_gain
         slot_best_feature[slot] = best_feature
         slot_best_bin[slot] = best_bin
         slot_best_left_count[slot] = best_left_count
         slot_best_right_count[slot] = best_right_count
+        slot_best_left_weight[slot] = best_left_weight
+        slot_best_right_weight[slot] = best_right_weight
 
 
 @cuda.jit
@@ -657,12 +334,13 @@ def _gpu_snapshot():
 
 def _start_profile(stage_name: str):
     gpu = _gpu_snapshot()
+    rss = _rss_bytes()
     return {
         "stage": stage_name,
         "wall_start": time.perf_counter(),
         "cpu_start": time.process_time(),
-        "rss_start": _rss_bytes(),
-        "rss_max": _rss_bytes(),
+        "rss_start": rss,
+        "rss_max": rss,
         "gpu_used_start": gpu["gpu_used_bytes"],
         "gpu_used_max": gpu["gpu_used_bytes"],
         "gpu_pool_used_start": gpu["gpu_pool_used_bytes"],
@@ -699,7 +377,6 @@ def print_profile(profile_state: dict):
     wall = profile_state["wall_end"] - profile_state["wall_start"]
     cpu = profile_state["cpu_end"] - profile_state["cpu_start"]
     cpu_pct = 100.0 * cpu / wall if wall > 0.0 else 0.0
-
     print()
     print(f"[profile:{profile_state['stage']}]")
     print(f"  wall_s={wall:.3f} cpu_s={cpu:.3f} cpu_pct_est={cpu_pct:.1f}")
@@ -729,27 +406,66 @@ def print_profile(profile_state: dict):
     )
 
 
+@dataclass
+class TrainingCacheBatch:
+    bins: np.ndarray
+    target_stats: np.ndarray
+    sample_weight: np.ndarray | None
+    prediction: np.ndarray
+
+
+class TrainingCache:
+    def __init__(self, batches: list[TrainingCacheBatch], prediction_dim: int):
+        self.batches = batches
+        self.prediction_dim = prediction_dim
+
+    def __iter__(self):
+        return iter(self.batches)
+
+    def initialize_predictions(self, base_prediction: np.ndarray):
+        base = np.asarray(base_prediction, dtype=np.float32)
+        for batch in self.batches:
+            batch.prediction[...] = base
+
+    def target_stat_mean(self) -> np.ndarray:
+        total = np.zeros((self.prediction_dim,), dtype=np.float64)
+        denominator = 0.0
+        for batch in self.batches:
+            if batch.sample_weight is None:
+                total += np.sum(batch.target_stats, axis=0, dtype=np.float64)
+                denominator += batch.target_stats.shape[0]
+            else:
+                total += np.sum(batch.sample_weight[:, None] * batch.target_stats, axis=0, dtype=np.float64)
+                denominator += float(np.sum(batch.sample_weight))
+        return (total / max(denominator, 1.0)).astype(np.float32)
+
+    def monitor_metric(self, family) -> tuple[float, float, float]:
+        total_error = 0.0
+        total_weight = 0.0
+        total_sum = 0.0
+        total_count = 0
+        for batch in self.batches:
+            error_sum, denominator = family.monitor_metric(batch.prediction, batch.target_stats, batch.sample_weight)
+            total_error += error_sum
+            total_weight += denominator
+            total_sum += float(np.sum(batch.prediction))
+            total_count += batch.prediction.shape[0]
+        return total_error / max(total_weight, 1.0), total_sum / max(total_count, 1), total_weight
+
+
 class GpuSingleTreeTrainer:
-    def __init__(self, tree_config: dict, dataset_config: dict, training_config: dict, objective):
+    def __init__(self, tree_config: dict, dataset_config: dict, training_config: dict, family):
         self.tree_config = tree_config
         self.dataset_config = dataset_config
         self.training_config = training_config
-        self.objective = objective
+        self.family = family
 
     @property
     def device_name(self) -> str:
         return str(cuda.get_current_device().name)
 
     def provider_kwargs(self) -> dict:
-        return {
-            "n_features": self.dataset_config.get("n_features"),
-            "n_classes": self.dataset_config.get("n_classes"),
-            "batch_size": self.dataset_config.get("batch_size"),
-            "n_batches": self.dataset_config.get("n_batches"),
-            "feature_offset_scale": self.dataset_config.get("feature_offset_scale"),
-            "feature_noise": self.dataset_config.get("feature_noise"),
-            "seed": self.dataset_config.get("seed"),
-        }
+        return self.family.provider_kwargs(self.dataset_config)
 
     def _bin_cp_dtype(self):
         return cp.uint8 if self.tree_config.get("max_bin") <= 256 else cp.uint16
@@ -757,50 +473,48 @@ class GpuSingleTreeTrainer:
     def build_cuts(self, provider_kwargs: dict) -> tuple[np.ndarray, cp.ndarray]:
         cut_batches = []
         sampled_rows = 0
-        for batch in self.objective.stream_batches(self.dataset_config):
+        for batch in self.family.stream_batches(self.dataset_config):
             take = min(batch.x.shape[0], self.tree_config.get("cut_sample_rows") - sampled_rows)
             if take > 0:
                 cut_batches.append(batch.x[:take].copy())
                 sampled_rows += take
             if sampled_rows >= self.tree_config.get("cut_sample_rows"):
                 break
-
         cut_sample = np.concatenate(cut_batches, axis=0)
         quantile_levels = np.linspace(0.0, 1.0, self.tree_config.get("max_bin") + 1, dtype=np.float64)[1:-1]
         cuts_cpu = np.quantile(cut_sample, quantile_levels, axis=0).T.astype(np.float32)
         return cuts_cpu, cp.asarray(cuts_cpu)
 
-    def build_quantized_cache(
-        self,
-        provider_kwargs: dict,
-        cuts_gpu: cp.ndarray,
-        profile: bool,
-        training_profile: dict | None,
-    ) -> list[CachedTrainingBatch]:
+    def build_training_cache(self, cuts_gpu: cp.ndarray, profile: bool, training_profile: dict | None) -> TrainingCache:
         cache_profile = _start_profile("cache_build") if profile else None
         cache_x_gpu = None
         cache_bins_gpu = None
-        quantized_train_batches = []
-
-        for batch in self.objective.stream_batches(self.dataset_config):
+        cache_batches = []
+        prediction_dim = self.dataset_config.get("n_classes")
+        for batch in self.family.stream_batches(self.dataset_config):
             if cache_x_gpu is None or cache_x_gpu.shape != batch.x.shape:
                 cache_x_gpu = cp.empty(batch.x.shape, dtype=cp.float32)
                 cache_bins_gpu = cp.empty(batch.x.shape, dtype=self._bin_cp_dtype())
-
             cache_x_gpu.set(batch.x)
             quant_blocks = ((cache_x_gpu.shape[0] + 15) // 16, (cache_x_gpu.shape[1] + 15) // 16)
             quantize_batch[quant_blocks, (16, 16)](cache_x_gpu, cuts_gpu, cache_bins_gpu)
             cuda.synchronize()
-            quantized_train_batches.append(self.objective.make_training_batch(cp.asnumpy(cache_bins_gpu), batch))
+            cache_batches.append(
+                TrainingCacheBatch(
+                    bins=cp.asnumpy(cache_bins_gpu),
+                    target_stats=batch.target_stats.astype(np.float32, copy=False),
+                    sample_weight=None if batch.sample_weight is None else batch.sample_weight.astype(np.float32, copy=False),
+                    prediction=np.empty((batch.target_stats.shape[0], prediction_dim), dtype=np.float32),
+                )
+            )
             if cache_profile is not None:
                 _update_profile(cache_profile)
             if training_profile is not None:
                 _update_profile(training_profile)
-
         if cache_profile is not None:
             _finish_profile(cache_profile)
             print_profile(cache_profile)
-        return quantized_train_batches
+        return TrainingCache(cache_batches, prediction_dim)
 
     def _finalize_gpu_prediction_state(self, tree: SingleTree):
         tree.split_feature_gpu = cp.asarray(tree.split_feature_cpu)
@@ -811,13 +525,13 @@ class GpuSingleTreeTrainer:
         tree.is_leaf_gpu = cp.asarray(tree.is_leaf_cpu)
         tree.leaf_value_gpu = cp.asarray(tree.leaf_value_cpu)
 
-    def predict_batch(self, tree: SingleTree, x: np.ndarray | None = None, bins: np.ndarray | None = None) -> np.ndarray:
+    def predict_tree_batch(self, tree: SingleTree, x: np.ndarray | None = None, bins: np.ndarray | None = None) -> np.ndarray:
         if (x is None) == (bins is None):
             raise ValueError("Provide exactly one of x or bins.")
-
-        pred_gpu = cp.empty(((x.shape[0] if x is not None else bins.shape[0]), tree.n_classes), dtype=cp.float32)
+        n_rows = x.shape[0] if x is not None else bins.shape[0]
+        pred_gpu = cp.empty((n_rows, tree.prediction_dim), dtype=cp.float32)
         threads_per_block = self.training_config.get("threads_per_block")
-        blocks_1d = (pred_gpu.shape[0] + threads_per_block - 1) // threads_per_block
+        blocks_1d = (n_rows + threads_per_block - 1) // threads_per_block
         if bins is not None:
             bins_gpu = cp.asarray(bins)
             predict_rows_gpu_bins_kernel[blocks_1d, threads_per_block](
@@ -845,15 +559,31 @@ class GpuSingleTreeTrainer:
         cuda.synchronize()
         return cp.asnumpy(pred_gpu)
 
-    def fit(
+    def predict_model_batch(self, model: AdditiveEnsemble, x: np.ndarray) -> np.ndarray:
+        pred = np.repeat(model.base_prediction[None, :], x.shape[0], axis=0)
+        for tree in model.trees:
+            pred += model.learning_rate * self.predict_tree_batch(tree, x=x)
+        return self.family.project_prediction(pred)
+
+    def _leaf_value(self, target_stat_sum: np.ndarray, total_weight: float) -> np.ndarray:
+        return target_stat_sum / (total_weight + self.tree_config.get("reg_lambda"))
+
+    def _leaf_score(self, target_stat_sum: np.ndarray, total_weight: float) -> float:
+        if total_weight <= 0.0:
+            return -np.inf
+        return float(np.dot(target_stat_sum, target_stat_sum) / (total_weight + self.tree_config.get("reg_lambda")))
+
+    def fit_tree(
         self,
-        tree: SingleTree,
-        quantized_train_batches: list[CachedTrainingBatch],
+        training_cache: TrainingCache,
         cuts_cpu: np.ndarray,
         profile: bool,
         training_profile: dict | None,
-    ):
-        tree_growth_profile = _start_profile("tree_growth") if profile else None
+        round_idx: int,
+    ) -> SingleTree:
+        tree = SingleTree(self.dataset_config.get("n_classes"))
+        tree_profile = _start_profile(f"tree_growth_round_{round_idx + 1}") if profile else None
+        threads_per_block = self.training_config.get("threads_per_block")
 
         while True:
             candidate_node_ids = tree.candidate_node_ids(self.tree_config)
@@ -871,22 +601,15 @@ class GpuSingleTreeTrainer:
             is_leaf_gpu = cp.asarray(np.array([1 if node.is_leaf else 0 for node in tree.nodes], dtype=np.int8))
             candidate_slot_of_node_gpu = cp.asarray(candidate_slot_of_node_cpu)
 
-            hist_count_gpu = cp.zeros(
-                (len(candidate_node_ids), self.dataset_config.get("n_features"), self.tree_config.get("max_bin")),
-                dtype=cp.int32,
-            )
-            hist_sum_gpu = cp.zeros(
-                (
-                    len(candidate_node_ids),
-                    self.dataset_config.get("n_features"),
-                    self.tree_config.get("max_bin"),
-                    self.dataset_config.get("n_classes"),
-                ),
-                dtype=cp.float32,
-            )
+            n_slots = len(candidate_node_ids)
+            n_features = self.dataset_config.get("n_features")
+            n_bins = self.tree_config.get("max_bin")
+            pred_dim = self.dataset_config.get("n_classes")
+            hist_count_gpu = cp.zeros((n_slots, n_features, n_bins), dtype=cp.int32)
+            hist_weight_gpu = cp.zeros((n_slots, n_features, n_bins), dtype=cp.float32)
+            hist_sum_gpu = cp.zeros((n_slots, n_features, n_bins, pred_dim), dtype=cp.float32)
 
-            threads_per_block = self.training_config.get("threads_per_block")
-            for batch in quantized_train_batches:
+            for batch in training_cache:
                 bins_gpu = cp.asarray(batch.bins)
                 blocks_1d = (bins_gpu.shape[0] + threads_per_block - 1) // threads_per_block
                 row_slot_gpu = cp.empty((bins_gpu.shape[0],), dtype=cp.int32)
@@ -900,104 +623,72 @@ class GpuSingleTreeTrainer:
                     candidate_slot_of_node_gpu,
                     row_slot_gpu,
                 )
-                if self.objective.uses_target_codes(batch):
-                    target_codes_gpu = cp.asarray(batch.target_codes)
-                    if self.objective.use_weights:
-                        build_candidate_histograms_weighted[blocks_1d, threads_per_block](
-                            bins_gpu,
-                            target_codes_gpu,
-                            cp.asarray(batch.sample_weight),
-                            row_slot_gpu,
-                            hist_count_gpu,
-                            hist_sum_gpu,
-                        )
-                    else:
-                        build_candidate_histograms_unweighted[blocks_1d, threads_per_block](
-                            bins_gpu,
-                            target_codes_gpu,
-                            row_slot_gpu,
-                            hist_count_gpu,
-                            hist_sum_gpu,
-                        )
+                residual_gpu = cp.asarray(batch.target_stats - batch.prediction, dtype=cp.float32)
+                if batch.sample_weight is None:
+                    build_candidate_histograms_unweighted[blocks_1d, threads_per_block](
+                        bins_gpu,
+                        residual_gpu,
+                        row_slot_gpu,
+                        hist_count_gpu,
+                        hist_weight_gpu,
+                        hist_sum_gpu,
+                    )
                 else:
-                    target_stats_gpu = cp.asarray(batch.target_stats, dtype=cp.float32)
-                    if self.objective.use_weights:
-                        build_candidate_histograms_dense_weighted[blocks_1d, threads_per_block](
-                            bins_gpu,
-                            target_stats_gpu,
-                            cp.asarray(batch.sample_weight),
-                            row_slot_gpu,
-                            hist_count_gpu,
-                            hist_sum_gpu,
-                        )
-                    else:
-                        build_candidate_histograms_dense_unweighted[blocks_1d, threads_per_block](
-                            bins_gpu,
-                            target_stats_gpu,
-                            row_slot_gpu,
-                            hist_count_gpu,
-                            hist_sum_gpu,
-                        )
-                if tree_growth_profile is not None:
-                    _update_profile(tree_growth_profile)
+                    build_candidate_histograms_weighted[blocks_1d, threads_per_block](
+                        bins_gpu,
+                        residual_gpu,
+                        cp.asarray(batch.sample_weight),
+                        row_slot_gpu,
+                        hist_count_gpu,
+                        hist_weight_gpu,
+                        hist_sum_gpu,
+                    )
+                if tree_profile is not None:
+                    _update_profile(tree_profile)
                 if training_profile is not None:
                     _update_profile(training_profile)
 
-            n_slots = len(candidate_node_ids)
             slot_parent_count_gpu = cp.zeros((n_slots,), dtype=cp.int32)
-            slot_parent_sum_gpu = cp.zeros((n_slots, self.dataset_config.get("n_classes")), dtype=cp.float32)
-            feature_best_gain_gpu = cp.full((n_slots, self.dataset_config.get("n_features")), -1.0e30, dtype=cp.float32)
-            feature_best_bin_gpu = cp.full((n_slots, self.dataset_config.get("n_features")), -1, dtype=cp.int32)
-            feature_best_left_count_gpu = cp.zeros((n_slots, self.dataset_config.get("n_features")), dtype=cp.int32)
-            feature_best_right_count_gpu = cp.zeros((n_slots, self.dataset_config.get("n_features")), dtype=cp.int32)
-            feature_best_left_sum_gpu = cp.zeros(
-                (n_slots, self.dataset_config.get("n_features"), self.dataset_config.get("n_classes")),
-                dtype=cp.float32,
-            )
-            feature_best_right_sum_gpu = cp.zeros(
-                (n_slots, self.dataset_config.get("n_features"), self.dataset_config.get("n_classes")),
-                dtype=cp.float32,
-            )
+            slot_parent_weight_gpu = cp.zeros((n_slots,), dtype=cp.float32)
+            slot_parent_sum_gpu = cp.zeros((n_slots, pred_dim), dtype=cp.float32)
+            feature_best_gain_gpu = cp.full((n_slots, n_features), -1.0e30, dtype=cp.float32)
+            feature_best_bin_gpu = cp.full((n_slots, n_features), -1, dtype=cp.int32)
+            feature_best_left_count_gpu = cp.zeros((n_slots, n_features), dtype=cp.int32)
+            feature_best_right_count_gpu = cp.zeros((n_slots, n_features), dtype=cp.int32)
+            feature_best_left_weight_gpu = cp.zeros((n_slots, n_features), dtype=cp.float32)
+            feature_best_right_weight_gpu = cp.zeros((n_slots, n_features), dtype=cp.float32)
+            feature_best_left_sum_gpu = cp.zeros((n_slots, n_features, pred_dim), dtype=cp.float32)
+            feature_best_right_sum_gpu = cp.zeros((n_slots, n_features, pred_dim), dtype=cp.float32)
 
-            eval_blocks = ((n_slots + 7) // 8, (self.dataset_config.get("n_features") + 7) // 8)
-            if self.objective.use_weights:
-                evaluate_feature_splits_weighted[eval_blocks, (8, 8)](
-                    hist_count_gpu,
-                    hist_sum_gpu,
-                    self.tree_config.get("min_samples_leaf"),
-                    self.tree_config.get("reg_lambda"),
-                    slot_parent_count_gpu,
-                    slot_parent_sum_gpu,
-                    feature_best_gain_gpu,
-                    feature_best_bin_gpu,
-                    feature_best_left_count_gpu,
-                    feature_best_right_count_gpu,
-                    feature_best_left_sum_gpu,
-                    feature_best_right_sum_gpu,
-                )
-            else:
-                evaluate_feature_splits_unweighted[eval_blocks, (8, 8)](
-                    hist_count_gpu,
-                    hist_sum_gpu,
-                    self.tree_config.get("min_samples_leaf"),
-                    self.tree_config.get("reg_lambda"),
-                    slot_parent_count_gpu,
-                    slot_parent_sum_gpu,
-                    feature_best_gain_gpu,
-                    feature_best_bin_gpu,
-                    feature_best_left_count_gpu,
-                    feature_best_right_count_gpu,
-                    feature_best_left_sum_gpu,
-                    feature_best_right_sum_gpu,
-                )
+            eval_blocks = ((n_slots + 7) // 8, (n_features + 7) // 8)
+            evaluate_feature_splits[eval_blocks, (8, 8)](
+                hist_count_gpu,
+                hist_weight_gpu,
+                hist_sum_gpu,
+                self.tree_config.get("min_samples_leaf"),
+                self.tree_config.get("reg_lambda"),
+                slot_parent_count_gpu,
+                slot_parent_weight_gpu,
+                slot_parent_sum_gpu,
+                feature_best_gain_gpu,
+                feature_best_bin_gpu,
+                feature_best_left_count_gpu,
+                feature_best_right_count_gpu,
+                feature_best_left_weight_gpu,
+                feature_best_right_weight_gpu,
+                feature_best_left_sum_gpu,
+                feature_best_right_sum_gpu,
+            )
 
             slot_best_gain_gpu = cp.full((n_slots,), -1.0e30, dtype=cp.float32)
             slot_best_feature_gpu = cp.full((n_slots,), -1, dtype=cp.int32)
             slot_best_bin_gpu = cp.full((n_slots,), -1, dtype=cp.int32)
             slot_best_left_count_gpu = cp.zeros((n_slots,), dtype=cp.int32)
             slot_best_right_count_gpu = cp.zeros((n_slots,), dtype=cp.int32)
-            slot_best_left_sum_gpu = cp.zeros((n_slots, self.dataset_config.get("n_classes")), dtype=cp.float32)
-            slot_best_right_sum_gpu = cp.zeros((n_slots, self.dataset_config.get("n_classes")), dtype=cp.float32)
+            slot_best_left_weight_gpu = cp.zeros((n_slots,), dtype=cp.float32)
+            slot_best_right_weight_gpu = cp.zeros((n_slots,), dtype=cp.float32)
+            slot_best_left_sum_gpu = cp.zeros((n_slots, pred_dim), dtype=cp.float32)
+            slot_best_right_sum_gpu = cp.zeros((n_slots, pred_dim), dtype=cp.float32)
 
             reduce_blocks = (n_slots + threads_per_block - 1) // threads_per_block
             reduce_feature_bests[reduce_blocks, threads_per_block](
@@ -1005,6 +696,8 @@ class GpuSingleTreeTrainer:
                 feature_best_bin_gpu,
                 feature_best_left_count_gpu,
                 feature_best_right_count_gpu,
+                feature_best_left_weight_gpu,
+                feature_best_right_weight_gpu,
                 feature_best_left_sum_gpu,
                 feature_best_right_sum_gpu,
                 slot_best_gain_gpu,
@@ -1012,23 +705,28 @@ class GpuSingleTreeTrainer:
                 slot_best_bin_gpu,
                 slot_best_left_count_gpu,
                 slot_best_right_count_gpu,
+                slot_best_left_weight_gpu,
+                slot_best_right_weight_gpu,
                 slot_best_left_sum_gpu,
                 slot_best_right_sum_gpu,
             )
             cuda.synchronize()
 
-            if tree_growth_profile is not None:
-                _update_profile(tree_growth_profile)
+            if tree_profile is not None:
+                _update_profile(tree_profile)
             if training_profile is not None:
                 _update_profile(training_profile)
 
             slot_parent_count = cp.asnumpy(slot_parent_count_gpu)
+            slot_parent_weight = cp.asnumpy(slot_parent_weight_gpu)
             slot_parent_sum = cp.asnumpy(slot_parent_sum_gpu)
             slot_best_gain = cp.asnumpy(slot_best_gain_gpu)
             slot_best_feature = cp.asnumpy(slot_best_feature_gpu)
             slot_best_bin = cp.asnumpy(slot_best_bin_gpu)
             slot_best_left_count = cp.asnumpy(slot_best_left_count_gpu)
             slot_best_right_count = cp.asnumpy(slot_best_right_count_gpu)
+            slot_best_left_weight = cp.asnumpy(slot_best_left_weight_gpu)
+            slot_best_right_weight = cp.asnumpy(slot_best_right_weight_gpu)
             slot_best_left_sum = cp.asnumpy(slot_best_left_sum_gpu)
             slot_best_right_sum = cp.asnumpy(slot_best_right_sum_gpu)
 
@@ -1037,13 +735,12 @@ class GpuSingleTreeTrainer:
                 node = tree.nodes[node_id]
                 node.count = int(slot_parent_count[slot])
                 parent_sum = slot_parent_sum[slot].astype(np.float64)
-                node_denominator = self.objective.total_weight_from_stats(parent_sum, node.count)
-                node.value = self.objective.leaf_value(parent_sum.astype(np.float32), node_denominator, self.tree_config.get("reg_lambda"))
-                parent_score = self.objective.leaf_score(parent_sum, node_denominator, self.tree_config.get("reg_lambda"))
+                parent_weight = float(slot_parent_weight[slot])
+                node.value = self._leaf_value(parent_sum.astype(np.float32), parent_weight)
+                parent_score = self._leaf_score(parent_sum, parent_weight)
                 if tree.root_score is None and node_id == 0:
                     tree.root_score = parent_score
-                    tree.root_weight = node_denominator
-
+                    tree.root_weight = parent_weight
                 node.gain = -np.inf
                 node.best_left_value = None
                 node.best_right_value = None
@@ -1052,7 +749,6 @@ class GpuSingleTreeTrainer:
                 node.split_feature = -1
                 node.split_bin = -1
                 node.split_threshold = 0.0
-
                 if node.count < 2 * self.tree_config.get("min_samples_leaf"):
                     node.expandable = False
                     continue
@@ -1068,22 +764,16 @@ class GpuSingleTreeTrainer:
 
                 best_left_sum = slot_best_left_sum[slot].astype(np.float32)
                 best_right_sum = slot_best_right_sum[slot].astype(np.float32)
+                best_left_weight = float(slot_best_left_weight[slot])
+                best_right_weight = float(slot_best_right_weight[slot])
                 node.gain = best_gain
                 node.split_feature = best_feature
                 node.split_bin = best_bin
                 node.split_threshold = float(cuts_cpu[best_feature, best_bin])
                 node.best_left_count = best_left_count
                 node.best_right_count = best_right_count
-                node.best_left_value = self.objective.leaf_value(
-                    best_left_sum,
-                    self.objective.total_weight_from_stats(best_left_sum.astype(np.float64), best_left_count),
-                    self.tree_config.get("reg_lambda"),
-                )
-                node.best_right_value = self.objective.leaf_value(
-                    best_right_sum,
-                    self.objective.total_weight_from_stats(best_right_sum.astype(np.float64), best_right_count),
-                    self.tree_config.get("reg_lambda"),
-                )
+                node.best_left_value = self._leaf_value(best_left_sum, best_left_weight)
+                node.best_right_value = self._leaf_value(best_right_sum, best_right_weight)
                 split_plans.append((node.gain, node_id))
 
             if not split_plans:
@@ -1113,7 +803,6 @@ class GpuSingleTreeTrainer:
                 if node.depth >= self.tree_config.get("max_depth") or tree.n_leaves >= self.tree_config.get("max_leaves"):
                     node.expandable = False
                     continue
-
                 left_node = Node(
                     node_id=tree.next_node_id,
                     depth=node.depth + 1,
@@ -1130,7 +819,6 @@ class GpuSingleTreeTrainer:
                     expandable=(node.depth + 1) < self.tree_config.get("max_depth"),
                 )
                 tree.next_node_id += 1
-
                 node.is_leaf = False
                 node.left_child = left_node.node_id
                 node.right_child = right_node.node_id
@@ -1139,74 +827,50 @@ class GpuSingleTreeTrainer:
                 tree.nodes.append(right_node)
                 tree.n_leaves += 1
 
-            if tree_growth_profile is not None:
-                _update_profile(tree_growth_profile)
+            if tree_profile is not None:
+                _update_profile(tree_profile)
             if training_profile is not None:
                 _update_profile(training_profile)
 
-        if tree_growth_profile is not None:
-            _finish_profile(tree_growth_profile)
-            print_profile(tree_growth_profile)
+        if tree_profile is not None:
+            _finish_profile(tree_profile)
+            print_profile(tree_profile)
+        tree.finalize_prediction_state()
+        self._finalize_gpu_prediction_state(tree)
+        return tree
 
-    def evaluate_cached_training_stream(
-        self,
-        tree: SingleTree,
-        quantized_train_batches: list[CachedTrainingBatch],
-        provider_kwargs: dict,
-        profile: bool,
-    ) -> tuple[float, float]:
+    def update_training_cache(self, training_cache: TrainingCache, tree: SingleTree, learning_rate: float, profile: bool, training_profile: dict | None, round_idx: int):
+        update_profile = _start_profile(f"cache_update_round_{round_idx + 1}") if profile else None
+        for batch in training_cache:
+            batch.prediction += learning_rate * self.predict_tree_batch(tree, bins=batch.bins)
+            batch.prediction[...] = self.family.project_prediction(batch.prediction)
+            if update_profile is not None:
+                _update_profile(update_profile)
+            if training_profile is not None:
+                _update_profile(training_profile)
+        if update_profile is not None:
+            _finish_profile(update_profile)
+            print_profile(update_profile)
+
+    def evaluate_cached_training_stream(self, training_cache: TrainingCache, profile: bool) -> tuple[float, float]:
         evaluation_profile = _start_profile("evaluation") if profile else None
-        total_count = 0
-        total_denominator = 0.0
-        total_error = 0.0
-        sum_prob = 0.0
-
-        if self.training_config.get("predict_method") == "gpu":
-            for batch in quantized_train_batches:
-                pred_cpu = self.predict_batch(tree, bins=batch.bins)
-                error_sum, denominator = self.objective.monitor_metric(
-                    pred_cpu,
-                    batch.target_stats,
-                    batch.sample_weight if self.objective.use_weights else None,
-                )
-                total_count += batch.bins.shape[0]
-                total_error += error_sum
-                total_denominator += denominator
-                sum_prob += float(np.sum(pred_cpu))
-                if evaluation_profile is not None:
-                    _update_profile(evaluation_profile)
-        else:
-            for batch in self.objective.stream_batches(self.dataset_config):
-                pred_cpu = tree.predict_batch(batch.x)
-                error_sum, denominator = self.objective.monitor_metric(
-                    pred_cpu,
-                    batch.target_stats,
-                    batch.sample_weight,
-                )
-                total_count += batch.x.shape[0]
-                total_error += error_sum
-                total_denominator += denominator
-                sum_prob += float(np.sum(pred_cpu))
-                if evaluation_profile is not None:
-                    _update_profile(evaluation_profile)
-
+        train_metric, mean_sum_prob, _ = training_cache.monitor_metric(self.family)
         if evaluation_profile is not None:
+            _update_profile(evaluation_profile)
             _finish_profile(evaluation_profile)
             print_profile(evaluation_profile)
             print()
             print("Inference done.")
+        return train_metric, mean_sum_prob
 
-        return total_error / max(total_denominator, 1.0), sum_prob / max(total_count, 1)
-
-    def profile_fresh_inference(self, tree: SingleTree, provider_kwargs: dict, profile: bool):
+    def profile_fresh_inference(self, model: AdditiveEnsemble, profile: bool):
         if not profile or self.training_config.get("predict_method") != "gpu":
             return
-
         fresh_profile = _start_profile("fresh_inference")
         fresh_sum_prob = 0.0
         fresh_count = 0
-        for batch in self.objective.stream_batches(self.dataset_config):
-            pred_cpu = self.predict_batch(tree, x=batch.x)
+        for batch in self.family.stream_batches(self.dataset_config):
+            pred_cpu = self.predict_model_batch(model, batch.x)
             fresh_sum_prob += float(np.sum(pred_cpu))
             fresh_count += batch.x.shape[0]
             _update_profile(fresh_profile)
@@ -1214,18 +878,39 @@ class GpuSingleTreeTrainer:
         print_profile(fresh_profile)
         print(f"Fresh inference mean sum of class predictions: {fresh_sum_prob / max(fresh_count, 1):.6f}")
 
-    def run(self, profile: bool) -> tuple[SingleTree, dict, float, float]:
+    def run(self, profile: bool) -> tuple[AdditiveEnsemble, dict, float, float, list[float]]:
         provider_kwargs = self.provider_kwargs()
         cuts_cpu, cuts_gpu = self.build_cuts(provider_kwargs)
         training_profile = _start_profile("training") if profile else None
-        quantized_train_batches = self.build_quantized_cache(provider_kwargs, cuts_gpu, profile, training_profile)
-        tree = SingleTree(self.dataset_config.get("n_classes"))
-        self.fit(tree, quantized_train_batches, cuts_cpu, profile, training_profile)
+        training_cache = self.build_training_cache(cuts_gpu, profile, training_profile)
+        base_prediction = self.family.base_prediction(training_cache.target_stat_mean())
+        training_cache.initialize_predictions(base_prediction)
+        model = AdditiveEnsemble(
+            prediction_dim=self.dataset_config.get("n_classes"),
+            base_prediction=base_prediction,
+            learning_rate=self.training_config.get("learning_rate"),
+        )
+
+        loss_history = []
+        initial_loss, initial_mean_sum_prob, _ = training_cache.monitor_metric(self.family)
+        loss_history.append(initial_loss)
+        print(f"Initial train {self.family.monitor_name}: {initial_loss:.6f}")
+
+        for round_idx in range(self.training_config.get("n_boost_rounds")):
+            tree = self.fit_tree(training_cache, cuts_cpu, profile, training_profile, round_idx)
+            model.add_tree(tree)
+            self.update_training_cache(training_cache, tree, model.learning_rate, profile, training_profile, round_idx)
+            round_loss, _, _ = training_cache.monitor_metric(self.family)
+            loss_history.append(round_loss)
+            print(
+                f"After round {round_idx + 1}: train {self.family.monitor_name}={round_loss:.6f} "
+                f"nodes={len(tree.nodes)} leaves={tree.n_leaves}"
+            )
+
         if training_profile is not None:
             _finish_profile(training_profile)
             print_profile(training_profile)
-        tree.finalize_prediction_state()
-        self._finalize_gpu_prediction_state(tree)
-        train_mse, mean_sum_prob = self.evaluate_cached_training_stream(tree, quantized_train_batches, provider_kwargs, profile)
-        self.profile_fresh_inference(tree, provider_kwargs, profile)
-        return tree, provider_kwargs, train_mse, mean_sum_prob
+
+        train_metric, mean_sum_prob = self.evaluate_cached_training_stream(training_cache, profile)
+        self.profile_fresh_inference(model, profile)
+        return model, provider_kwargs, train_metric, mean_sum_prob, loss_history
