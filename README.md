@@ -195,6 +195,7 @@ Implemented family names:
 
 - `normal_identity`
 - `heteroskedastic_normal`
+- `heteroskedastic_normal_ngd`
 - `poisson`
 - `poisson_mgd`
 - `poisson_ngd`
@@ -204,6 +205,7 @@ Select one with:
 ```bash
 python fit_single_tree_hist_demo.py --modify family normal_identity
 python fit_single_tree_hist_demo.py --modify family heteroskedastic_normal
+python fit_single_tree_hist_demo.py --modify family heteroskedastic_normal_ngd
 python fit_single_tree_hist_demo.py --modify family poisson
 python fit_single_tree_hist_demo.py --modify family poisson_ngd
 ```
