@@ -324,28 +324,10 @@ class CpuSingleTreeTrainer:
         self.training_config = training_config
         self.family = family
         self.cpu_threads = int(training_config.get("cpu_threads"))
-        fit_target_indices = tree_config.get("fit_target_indices")
-        self.fit_target_indices = None if fit_target_indices is None else np.asarray(fit_target_indices, dtype=np.int32)
-        fit_schedule_groups = training_config.get("fit_schedule_groups")
-        self.fit_schedule_groups = None if fit_schedule_groups is None else [np.asarray(group, dtype=np.int32) for group in fit_schedule_groups]
-        fit_schedule_probs = training_config.get("fit_schedule_probs")
-        self.fit_schedule_probs = None if fit_schedule_probs is None else np.asarray(fit_schedule_probs, dtype=np.float64)
-        self.schedule_rng = np.random.default_rng(int(dataset_config.get("seed", 0)) + 1729)
         set_num_threads(self.cpu_threads)
 
     def _set_threads(self, n_threads: int):
         set_num_threads(max(1, int(n_threads)))
-
-    def _fit_target_indices_for_round(self, round_idx: int) -> np.ndarray | None:
-        if self.fit_target_indices is not None:
-            return self.fit_target_indices
-        if self.fit_schedule_groups:
-            return self.fit_schedule_groups[round_idx % len(self.fit_schedule_groups)]
-        if self.fit_schedule_probs is not None:
-            probs = self.fit_schedule_probs / np.sum(self.fit_schedule_probs)
-            chosen = int(self.schedule_rng.choice(self.dataset_config.get("n_classes"), p=probs))
-            return np.asarray([chosen], dtype=np.int32)
-        return None
 
     @property
     def device_name(self) -> str:
@@ -454,7 +436,6 @@ class CpuSingleTreeTrainer:
     def fit_tree(self, training_cache: TrainingCache, cuts_cpu: np.ndarray, profile: bool, training_profile: dict | None, round_idx: int) -> SingleTree:
         tree = SingleTree(self.dataset_config.get("n_classes"))
         tree_profile = _start_profile(f"tree_growth_round_{round_idx + 1}") if profile else None
-        fit_target_indices = self._fit_target_indices_for_round(round_idx)
 
         while True:
             candidate_node_ids = tree.candidate_node_ids(self.tree_config)
@@ -492,10 +473,6 @@ class CpuSingleTreeTrainer:
                     row_slot,
                 )
                 residual = self.family.preconditioned_target(batch.state, batch.target_stats).astype(np.float32, copy=False)
-                if fit_target_indices is not None:
-                    masked_residual = np.zeros_like(residual)
-                    masked_residual[:, fit_target_indices] = residual[:, fit_target_indices]
-                    residual = masked_residual
                 if batch.sample_weight is None:
                     build_candidate_histograms_unweighted_cpu(batch.bins, residual, row_slot, hist_count, hist_weight, hist_sum)
                 else:

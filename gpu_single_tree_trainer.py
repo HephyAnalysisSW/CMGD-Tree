@@ -412,28 +412,10 @@ class GpuSingleTreeTrainer:
         self.dataset_config = dataset_config
         self.training_config = training_config
         self.family = family
-        fit_target_indices = tree_config.get("fit_target_indices")
-        self.fit_target_indices = None if fit_target_indices is None else np.asarray(fit_target_indices, dtype=np.int32)
-        fit_schedule_groups = training_config.get("fit_schedule_groups")
-        self.fit_schedule_groups = None if fit_schedule_groups is None else [np.asarray(group, dtype=np.int32) for group in fit_schedule_groups]
-        fit_schedule_probs = training_config.get("fit_schedule_probs")
-        self.fit_schedule_probs = None if fit_schedule_probs is None else np.asarray(fit_schedule_probs, dtype=np.float64)
-        self.schedule_rng = np.random.default_rng(int(dataset_config.get("seed", 0)) + 1729)
 
     @property
     def device_name(self) -> str:
         return str(cuda.get_current_device().name)
-
-    def _fit_target_indices_for_round(self, round_idx: int) -> np.ndarray | None:
-        if self.fit_target_indices is not None:
-            return self.fit_target_indices
-        if self.fit_schedule_groups:
-            return self.fit_schedule_groups[round_idx % len(self.fit_schedule_groups)]
-        if self.fit_schedule_probs is not None:
-            probs = self.fit_schedule_probs / np.sum(self.fit_schedule_probs)
-            chosen = int(self.schedule_rng.choice(self.dataset_config.get("n_classes"), p=probs))
-            return np.asarray([chosen], dtype=np.int32)
-        return None
 
     def provider_kwargs(self) -> dict:
         return self.family.provider_kwargs(self.dataset_config)
@@ -563,7 +545,6 @@ class GpuSingleTreeTrainer:
         tree = SingleTree(self.dataset_config.get("n_classes"))
         tree_profile = _start_profile(f"tree_growth_round_{round_idx + 1}") if profile else None
         threads_per_block = self.training_config.get("threads_per_block")
-        fit_target_indices = self._fit_target_indices_for_round(round_idx)
 
         while True:
             candidate_node_ids = tree.candidate_node_ids(self.tree_config)
@@ -604,10 +585,6 @@ class GpuSingleTreeTrainer:
                     row_slot_gpu,
                 )
                 residual_gpu = cp.asarray(self.family.preconditioned_target(batch.state, batch.target_stats), dtype=cp.float32)
-                if fit_target_indices is not None:
-                    masked_residual_gpu = cp.zeros_like(residual_gpu)
-                    masked_residual_gpu[:, fit_target_indices] = residual_gpu[:, fit_target_indices]
-                    residual_gpu = masked_residual_gpu
                 if batch.sample_weight is None:
                     build_candidate_histograms_unweighted[blocks_1d, threads_per_block](
                         bins_gpu,
