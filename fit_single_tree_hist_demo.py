@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ast
 
+from cpu_single_tree_trainer import CpuSingleTreeTrainer
 from families import family_from_configs
 from gpu_single_tree_trainer import GpuSingleTreeTrainer
 from plot_feature_ratios import make_family_diagnostic_plots
@@ -36,6 +37,7 @@ TRAINING_CONFIG = {
     "plot_bins": 80,
     "plot_mode": "all",
     "threads_per_block": 128,
+    "training_backend": "gpu",
     "predict_method": "cpu",
     "cpu_predictor": "index",
     "n_boost_rounds": 2,
@@ -125,10 +127,14 @@ def _parse_args():
         raise ValueError("grow_policy must be 'depthwise' or 'lossguide'.")
     if TREE_CONFIG.get("family") not in {"normal_identity", "poisson", "poisson_mgd", "poisson_ngd"}:
         raise ValueError("family must be 'normal_identity', 'poisson', 'poisson_mgd', or 'poisson_ngd'.")
+    if TRAINING_CONFIG.get("training_backend") not in {"gpu", "cpu"}:
+        raise ValueError("training_backend must be 'gpu' or 'cpu'.")
     if TRAINING_CONFIG.get("predict_method") not in {"cpu", "gpu"}:
         raise ValueError("predict_method must be 'cpu' or 'gpu'.")
     if TRAINING_CONFIG.get("cpu_predictor") not in {"index", "leaf_mask", "numba", "numba_parallel"}:
         raise ValueError("cpu_predictor must be 'index', 'leaf_mask', 'numba', or 'numba_parallel'.")
+    if TRAINING_CONFIG.get("training_backend") == "cpu" and TRAINING_CONFIG.get("predict_method") == "gpu":
+        raise ValueError("training_backend=cpu currently requires predict_method=cpu.")
     if args.full_output:
         args.plot = True
         args.print_trees = True
@@ -137,11 +143,15 @@ def _parse_args():
 
 ARGS = _parse_args()
 FAMILY = family_from_configs(TREE_CONFIG, DATASET_CONFIG)
-TRAINER = GpuSingleTreeTrainer(TREE_CONFIG, DATASET_CONFIG, TRAINING_CONFIG, FAMILY)
+if TRAINING_CONFIG.get("training_backend") == "gpu":
+    TRAINER = GpuSingleTreeTrainer(TREE_CONFIG, DATASET_CONFIG, TRAINING_CONFIG, FAMILY)
+else:
+    TRAINER = CpuSingleTreeTrainer(TREE_CONFIG, DATASET_CONFIG, TRAINING_CONFIG, FAMILY)
 
 
 def main():
-    print("GPU:", TRAINER.device_name)
+    print("Training backend:", TRAINING_CONFIG.get("training_backend"))
+    print("Device:", TRAINER.device_name)
     print("Tree config:", TREE_CONFIG)
     print("Dataset config:", DATASET_CONFIG)
     print("Training config:", TRAINING_CONFIG)
