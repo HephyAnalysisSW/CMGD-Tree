@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import time
 
 import numpy as np
@@ -37,6 +38,7 @@ def parse_args():
 
     parser = argparse.ArgumentParser(description="Apples-to-apples single-core fresh inference comparison.")
     parser.add_argument("--modify", nargs="*", default=[])
+    parser.add_argument("--result-path", default=None)
     args, _unknown = parser.parse_known_args()
     if len(args.modify) % 2 != 0:
         raise ValueError("--modify expects key value pairs.")
@@ -177,6 +179,8 @@ def build_our_model():
 
 
 def build_xgb_model():
+    wall_start = time.perf_counter()
+    cpu_start = time.process_time()
     train_x, train_y = make_train_arrays()
     model = xgb.XGBRegressor(
         objective="reg:squarederror",
@@ -196,8 +200,6 @@ def build_xgb_model():
         n_jobs=COMPARE_CONFIG["xgb_n_jobs"],
         verbosity=0,
     )
-    wall_start = time.perf_counter()
-    cpu_start = time.process_time()
     model.fit(train_x, train_y)
     train_wall = time.perf_counter() - wall_start
     train_cpu = time.process_time() - cpu_start
@@ -246,8 +248,19 @@ def print_stats(name: str, stats: dict):
     )
 
 
+def write_results(result_path: str, our_stats: dict, xgb_stats: dict) -> None:
+    payload = {
+        "config": COMPARE_CONFIG,
+        "ours": our_stats,
+        "xgboost": xgb_stats,
+    }
+    with open(result_path, "w", encoding="utf-8") as fout:
+        json.dump(payload, fout, indent=2, sort_keys=True)
+        fout.write("\n")
+
+
 def main():
-    parse_args()
+    args = parse_args()
     print("Compare config:", COMPARE_CONFIG)
     our_stats = build_our_model()
     xgb_stats = build_xgb_model()
@@ -255,6 +268,8 @@ def main():
     print_stats("ours", our_stats)
     print()
     print_stats("xgboost", xgb_stats)
+    if args.result_path:
+        write_results(args.result_path, our_stats, xgb_stats)
 
 
 if __name__ == "__main__":
