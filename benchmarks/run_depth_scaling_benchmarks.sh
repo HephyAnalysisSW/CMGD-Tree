@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="${HOME}/logs/depth_scaling"
 RESULT_DIR="${LOG_DIR}/results"
 mkdir -p "${LOG_DIR}" "${RESULT_DIR}"
@@ -22,7 +22,7 @@ for depth in "${DEPTHS[@]}"; do
       continue
     fi
     cmd=(
-      python compare_normal_single_core_inference.py
+      python -m benchmarks.compare_normal_single_core_inference
       --modify
       max_depth "${depth}"
       max_leaves "${max_leaves}"
@@ -41,6 +41,6 @@ for depth in "${DEPTHS[@]}"; do
   done
 done
 
-python plot_depth_scaling.py \
+python -m benchmarks.plot_depth_scaling \
   --results-dir "${RESULT_DIR}" \
   --output-dir "${ROOT_DIR}/plots/depth_scaling"

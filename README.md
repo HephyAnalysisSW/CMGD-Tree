@@ -1,81 +1,165 @@
 # CMGD-Tree
 
-Lean GPU-first histogram tree fitting with streamed data, additive boosting, and CPU/GPU inference benchmarks.
+CMGD-Tree is a lean streamed histogram-tree sandbox for vector-valued boosting with:
 
-The current code fits vector-valued regression trees to streamed target statistics `T(y)`. The default example is a shallow boosted normal-identity model, and the code also includes a first Poisson family example.
+- GPU training
+- CPU or GPU inference
+- family-specific target statistics and monitoring losses
+- toy providers for quick experiments
 
-## Main Files
+The main entrypoint is [fit_single_tree_hist_demo.py](/home/rschoefbeck/CMGD-Tree/fit_single_tree_hist_demo.py).
 
-- [fit_single_tree_hist_demo.py](/home/rschoefbeck/CMGD-Tree/fit_single_tree_hist_demo.py): main demo and benchmark entrypoint
-- [gpu_single_tree_trainer.py](/home/rschoefbeck/CMGD-Tree/gpu_single_tree_trainer.py): GPU training backend and in-memory `TrainingCache`
+## Repository Layout
+
+- [fit_single_tree_hist_demo.py](/home/rschoefbeck/CMGD-Tree/fit_single_tree_hist_demo.py): user-facing demo CLI
+- [gpu_single_tree_trainer.py](/home/rschoefbeck/CMGD-Tree/gpu_single_tree_trainer.py): GPU trainer backend and `TrainingCache`
 - [single_tree.py](/home/rschoefbeck/CMGD-Tree/single_tree.py): `SingleTree`, `AdditiveEnsemble`, CPU predictors
-- [families/](/home/rschoefbeck/CMGD-Tree/families): family definitions and update hooks
-- [providers/](/home/rschoefbeck/CMGD-Tree/providers): toy streamed data providers
+- [families/](/home/rschoefbeck/CMGD-Tree/families): family interfaces and implementations
+- [providers/](/home/rschoefbeck/CMGD-Tree/providers): streamed toy data providers
+- [plot_feature_ratios.py](/home/rschoefbeck/CMGD-Tree/plot_feature_ratios.py): diagnostic plots
+- [benchmarks/](/home/rschoefbeck/CMGD-Tree/benchmarks): XGBoost comparisons and scaling scripts
 - [normal_identity_family.py](/home/rschoefbeck/CMGD-Tree/normal_identity_family.py): compatibility shim for older imports
-- [plot_feature_ratios.py](/home/rschoefbeck/CMGD-Tree/plot_feature_ratios.py): diagnostic plotting
-- [compare_normal_single_core_inference.py](/home/rschoefbeck/CMGD-Tree/compare_normal_single_core_inference.py): matched comparison against XGBoost
-- [xgboost_normal_compare.py](/home/rschoefbeck/CMGD-Tree/xgboost_normal_compare.py): standalone XGBoost baseline
 
-## Quick Start
+## Basic Usage
 
-Standard run:
+Small default run:
 
 ```bash
 python fit_single_tree_hist_demo.py
 ```
 
-Built-in profiling:
+Print the fitted trees:
+
+```bash
+python fit_single_tree_hist_demo.py --print-trees
+```
+
+Generate plots:
+
+```bash
+python fit_single_tree_hist_demo.py --plot
+```
+
+Print trees and generate plots:
+
+```bash
+python fit_single_tree_hist_demo.py --print-trees --plot
+```
+
+Profile training and inference only:
 
 ```bash
 python fit_single_tree_hist_demo.py --profile
 ```
 
-Full output with tree printing and plots:
-
-```bash
-python fit_single_tree_hist_demo.py --profile --full-output
-```
-
 Logs should go under `~/logs`, for example:
 
 ```bash
-python fit_single_tree_hist_demo.py --profile | tee ~/logs/standard_test.log
+python fit_single_tree_hist_demo.py --plot > ~/logs/demo_run.log 2>&1
 ```
+
+## CLI Flags
+
+The demo currently supports these top-level flags:
+
+- `--modify key value ...`
+  - override any config entry from the tree, dataset, or training config groups
+- `--profile`
+  - print built-in timing and memory summaries for cache build, tree growth, evaluation, and fresh inference
+- `--plot`
+  - write diagnostic plots under `./plots/<plot_training_id>/`
+- `--print-trees`
+  - print every fitted tree after the run
+- `--full-output`
+  - compatibility alias for `--plot --print-trees`
 
 ## Config Overrides
 
-All defaults live near the top of [fit_single_tree_hist_demo.py](/home/rschoefbeck/CMGD-Tree/fit_single_tree_hist_demo.py) in:
+The defaults live near the top of [fit_single_tree_hist_demo.py](/home/rschoefbeck/CMGD-Tree/fit_single_tree_hist_demo.py) in three groups.
 
-- `TREE_CONFIG`
-- `DATASET_CONFIG`
-- `TRAINING_CONFIG`
+### `TREE_CONFIG`
 
-Override any config entry with `--modify key value ...`:
+- `max_bin`
+- `cut_sample_rows`
+- `grow_policy`
+- `max_depth`
+- `max_leaves`
+- `min_samples_leaf`
+- `min_split_loss`
+- `reg_lambda`
+- `family`
+- `class_weights`
 
-```bash
-python fit_single_tree_hist_demo.py --profile --modify max_depth 4 max_leaves 16
-```
+### `DATASET_CONFIG`
 
-Example heavier CPU inference benchmark:
+- `n_features`
+- `n_classes`
+- `batch_size`
+- `n_batches`
+- `seed`
+- `feature_offset_scale`
+- `feature_noise`
+
+### `TRAINING_CONFIG`
+
+- `plot_training_id`
+- `plot_bins`
+- `plot_mode`
+- `threads_per_block`
+- `predict_method`
+- `cpu_predictor`
+- `n_boost_rounds`
+- `learning_rate`
+- `fresh_inference_batch_size`
+- `fresh_inference_n_batches`
+
+Override any of them with `--modify`.
+
+Examples:
+
+Normal toy run with a slightly deeper model, plots, and tree printing:
 
 ```bash
 python fit_single_tree_hist_demo.py \
-  --profile \
-  --modify \
-    n_features 4 \
-    n_boost_rounds 100 \
-    predict_method cpu \
-    cpu_predictor numba_parallel \
-    batch_size 65536 \
-    n_batches 12 \
-    fresh_inference_batch_size 262144 \
-    fresh_inference_n_batches 64 \
-  | tee ~/logs/cpu_predict_numba_parallel_manual.log
+  --print-trees \
+  --plot \
+  --modify n_features 4 max_depth 3 max_leaves 8
 ```
 
-## Current Families
+Poisson MGD toy run with plots:
 
-Select the family with:
+```bash
+python fit_single_tree_hist_demo.py \
+  --plot \
+  --modify family poisson n_features 4 n_classes 4 max_depth 3 max_leaves 8
+```
+
+Poisson NGD toy run with plots and printed trees:
+
+```bash
+python fit_single_tree_hist_demo.py \
+  --print-trees \
+  --plot \
+  --modify family poisson_ngd n_features 4 n_classes 4 max_depth 3 max_leaves 8
+```
+
+CPU inference with the compiled multicore predictor:
+
+```bash
+python fit_single_tree_hist_demo.py \
+  --modify predict_method cpu cpu_predictor numba_parallel n_features 4
+```
+
+## Families
+
+Implemented family names:
+
+- `normal_identity`
+- `poisson`
+- `poisson_mgd`
+- `poisson_ngd`
+
+Select one with:
 
 ```bash
 python fit_single_tree_hist_demo.py --modify family normal_identity
@@ -83,105 +167,86 @@ python fit_single_tree_hist_demo.py --modify family poisson
 python fit_single_tree_hist_demo.py --modify family poisson_ngd
 ```
 
-Currently implemented:
+Current division of responsibility:
 
-- `normal_identity`
-  - target statistics are one-hot class targets in the toy example
-  - monitor metric is MSE
-- `poisson`
-  - target statistics are vector Poisson counts
-  - monitor metric is Poisson NLL
-- `poisson_ngd`
-  - target statistics are vector Poisson counts
-  - monitor metric is Poisson NLL
-  - tree targets are Fisher-preconditioned pseudo-responses
-
-Family-specific code now lives under [families/](/home/rschoefbeck/CMGD-Tree/families), while toy streams live under [providers/](/home/rschoefbeck/CMGD-Tree/providers). Together they are the intended user-facing place for:
-
-- toy stream generation
-- target statistics `T(y)`
-- base prediction
-- prediction-domain projection
-- monitoring metric
-- plot configuration
+- [families/](/home/rschoefbeck/CMGD-Tree/families) defines:
+  - state representation
+  - target statistics
+  - update rule hooks
+  - monitoring loss
+  - plotting defaults
+- [providers/](/home/rschoefbeck/CMGD-Tree/providers) defines:
+  - streamed toy data generation
+  - the batch payload consumed by the trainer
 
 ## Prediction Modes
 
-Set prediction backend with:
+Prediction backend:
 
-```bash
-python fit_single_tree_hist_demo.py --modify predict_method cpu
-python fit_single_tree_hist_demo.py --modify predict_method gpu
-```
+- `predict_method cpu`
+- `predict_method gpu`
 
-CPU predictors:
+CPU predictor choices:
 
-- `index`: simple row-index traversal
-- `leaf_mask`: NumPy leaf-mask traversal
-- `numba`: compiled single-core forest traversal
-- `numba_parallel`: compiled multi-core forest traversal
+- `index`
+- `leaf_mask`
+- `numba`
+- `numba_parallel`
 
 Example:
 
 ```bash
-python fit_single_tree_hist_demo.py --profile --modify predict_method cpu cpu_predictor numba_parallel
+python fit_single_tree_hist_demo.py \
+  --modify predict_method cpu cpu_predictor numba_parallel n_features 4
 ```
 
-## Profiling Stages
+## Plotting
 
-`--profile` reports wall time, process CPU time, RSS, GPU memory, and CuPy pool usage for the main stages.
+Plotting is off by default.
 
-Typical stages include:
-
-- `cache_build`
-- `tree_growth_round_k`
-- `cache_update_round_k`
-- `training`
-- `evaluation`
-- `fresh_inference`
-
-`evaluation` uses the cached training stream. `fresh_inference` streams new raw batches and is the better proxy for real inference throughput.
-
-## XGBoost Comparison
-
-Standalone XGBoost benchmark:
-
-```bash
-python xgboost_normal_compare.py --modify n_jobs 1
-```
-
-Matched comparison against our implementation:
-
-```bash
-python compare_normal_single_core_inference.py --modify cpu_predictor numba
-```
-
-Deeper multicore comparison:
-
-```bash
-python compare_normal_single_core_inference.py \
-  --modify max_depth 7 max_leaves 128 cpu_predictor numba_parallel xgb_n_jobs 64 \
-  | tee ~/logs/compare_normal_multicore_inference_depth7_numba_parallel.log
-```
-
-## Plots
-
-By default the demo writes:
-
-- feature-density plots
-- feature-target 2D mean-overlay plots
-
-Output directory:
+When `--plot` is enabled, the demo writes diagnostic plots to:
 
 ```bash
 ./plots/<plot_training_id>/
 ```
 
-The default training id is `single_tree_demo`.
+The current default `plot_mode` is `all`, which means:
+
+- feature-density plots
+- feature-target 2D mean-overlay plots
+
+For small exploratory runs, it is often useful to reduce the toy dimensions:
+
+```bash
+python fit_single_tree_hist_demo.py \
+  --plot \
+  --modify n_features 4 n_classes 4 plot_training_id small_demo
+```
+
+## Benchmark Utilities
+
+Benchmark helpers live under [benchmarks/](/home/rschoefbeck/CMGD-Tree/benchmarks).
+
+Matched comparison against XGBoost:
+
+```bash
+python -m benchmarks.compare_normal_single_core_inference --modify cpu_predictor numba
+```
+
+Standalone XGBoost baseline:
+
+```bash
+python -m benchmarks.xgboost_normal_compare --modify n_jobs 1
+```
+
+Depth-scaling sweep:
+
+```bash
+bash benchmarks/run_depth_scaling_benchmarks.sh
+```
 
 ## Notes
 
-- Training cache is in memory now, but the code is organized around `TrainingCache` so storage can move later.
-- The current training backend is GPU-only.
-- CPU training is not implemented yet.
+- Training is GPU-only at the moment.
 - Plotting is intentionally outside the main profiling target.
+- `TrainingCache` is in-memory now, but its shape is intended to make later storage changes possible.

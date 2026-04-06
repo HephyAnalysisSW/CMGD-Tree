@@ -73,7 +73,7 @@ def _cast_override(value_text: str, default_value):
 
 def _parse_args():
     parser = argparse.ArgumentParser(
-        description="Single-tree histogram trainer demo with optional profiling."
+        description="Boosted histogram-tree demo with optional profiling, plotting, and tree printing."
     )
     parser.add_argument(
         "--modify",
@@ -84,12 +84,22 @@ def _parse_args():
     parser.add_argument(
         "--profile",
         action="store_true",
-        help="Profile training and evaluation. Plotting is excluded.",
+        help="Profile training and evaluation. Plotting and tree printing stay off unless requested.",
+    )
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        help="Generate diagnostic plots under ./plots/<plot_training_id>/.",
+    )
+    parser.add_argument(
+        "--print-trees",
+        action="store_true",
+        help="Print the fitted trees after the run.",
     )
     parser.add_argument(
         "--full-output",
         action="store_true",
-        help="Print the full tree and generate plots after the main run.",
+        help="Compatibility alias for --plot --print-trees.",
     )
     args, _unknown = parser.parse_known_args()
 
@@ -119,6 +129,9 @@ def _parse_args():
         raise ValueError("predict_method must be 'cpu' or 'gpu'.")
     if TRAINING_CONFIG.get("cpu_predictor") not in {"index", "leaf_mask", "numba", "numba_parallel"}:
         raise ValueError("cpu_predictor must be 'index', 'leaf_mask', 'numba', or 'numba_parallel'.")
+    if args.full_output:
+        args.plot = True
+        args.print_trees = True
     return args
 
 
@@ -155,12 +168,13 @@ def main():
 
 if __name__ == "__main__":
     model, provider_kwargs = main()
-    if ARGS.full_output or not ARGS.profile:
+    if ARGS.print_trees:
         print()
         for tree_idx, tree in enumerate(model.trees, start=1):
             print(f"Tree {tree_idx}:")
             tree.print_tree()
             print()
+    if ARGS.plot:
         make_family_diagnostic_plots(
             training_id=TRAINING_CONFIG.get("plot_training_id"),
             provider_class=FAMILY.provider_class,
