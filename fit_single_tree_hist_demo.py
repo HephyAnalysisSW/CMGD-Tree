@@ -23,6 +23,7 @@ TREE_CONFIG = {
     "reg_lambda": 0.0,
     "family": "normal_identity",
     "class_weights": None,
+    "fit_target_indices": None,
 }
 
 DATASET_CONFIG = {
@@ -46,6 +47,8 @@ TRAINING_CONFIG = {
     "cpu_predictor": "numba_parallel",
     "n_boost_rounds": 2,
     "learning_rate": 1.0,
+    "fit_schedule_groups": None,
+    "fit_schedule_probs": None,
     "fresh_inference_batch_size": None,
     "fresh_inference_n_batches": None,
 }

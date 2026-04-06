@@ -89,6 +89,7 @@ The defaults live near the top of [fit_single_tree_hist_demo.py](/home/rschoefbe
 - `reg_lambda`
 - `family`
 - `class_weights`
+- `fit_target_indices`
 
 ### `DATASET_CONFIG`
 
@@ -112,6 +113,8 @@ The defaults live near the top of [fit_single_tree_hist_demo.py](/home/rschoefbe
 - `cpu_predictor`
 - `n_boost_rounds`
 - `learning_rate`
+- `fit_schedule_groups`
+- `fit_schedule_probs`
 - `fresh_inference_batch_size`
 - `fresh_inference_n_batches`
 
@@ -166,6 +169,16 @@ Explicit CPU training with a bounded thread override:
 ```bash
 python fit_single_tree_hist_demo.py \
   --modify training_backend cpu cpu_threads 8 predict_method cpu n_features 4
+```
+
+Experimental coordinate-selection examples:
+
+```bash
+python fit_single_tree_hist_demo.py \
+  --modify family heteroskedastic_normal fit_target_indices "[1]"
+
+python fit_single_tree_hist_demo.py \
+  --modify family heteroskedastic_normal fit_schedule_groups "[[0],[1]]"
 ```
 
 The global default learning rate is `1.0`.
