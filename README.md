@@ -14,6 +14,11 @@ The main command is:
 python fit_single_tree_hist_demo.py
 ```
 
+Latest writeup PDF:
+
+- [GitHub Pages PDF](https://hephyanalysissw.github.io/CMGD-Tree/writeup.pdf)
+- [Actions workflow page](https://github.com/HephyAnalysisSW/CMGD-Tree/actions/workflows/build-writeup.yml)
+
 ## What You Can Run
 
 If you just want to see something work:

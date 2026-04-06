@@ -11,6 +11,11 @@ on:
       - ".github/workflows/build-writeup.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 jobs:
   build-writeup:
     runs-on: ubuntu-latest
@@ -31,3 +36,39 @@ jobs:
           name: writeup-pdf
           path: writeup.pdf
           if-no-files-found: error
+
+      - name: Prepare Pages payload
+        run: |
+          mkdir -p _site
+          cp writeup.pdf _site/writeup.pdf
+          cat > _site/index.html <<'EOF'
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>CMGD-Tree Writeup</title>
+          </head>
+          <body>
+            <h1>CMGD-Tree Writeup</h1>
+            <p><a href="./writeup.pdf">Open the latest PDF</a></p>
+          </body>
+          </html>
+          EOF
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy-pages:
+    needs: build-writeup
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
