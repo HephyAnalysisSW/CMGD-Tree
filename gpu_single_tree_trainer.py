@@ -411,7 +411,7 @@ class TrainingCacheBatch:
     bins: np.ndarray
     target_stats: np.ndarray
     sample_weight: np.ndarray | None
-    prediction: np.ndarray
+    state: np.ndarray
 
 
 class TrainingCache:
@@ -422,10 +422,10 @@ class TrainingCache:
     def __iter__(self):
         return iter(self.batches)
 
-    def initialize_predictions(self, base_prediction: np.ndarray):
-        base = np.asarray(base_prediction, dtype=np.float32)
+    def initialize_states(self, base_state: np.ndarray):
+        base = np.asarray(base_state, dtype=np.float32)
         for batch in self.batches:
-            batch.prediction[...] = base
+            batch.state[...] = base
 
     def target_stat_mean(self) -> np.ndarray:
         total = np.zeros((self.prediction_dim,), dtype=np.float64)
@@ -439,17 +439,17 @@ class TrainingCache:
                 denominator += float(np.sum(batch.sample_weight))
         return (total / max(denominator, 1.0)).astype(np.float32)
 
-    def monitor_metric(self, family) -> tuple[float, float, float]:
+    def monitoring_loss(self, family) -> tuple[float, float, float]:
         total_error = 0.0
         total_weight = 0.0
         total_sum = 0.0
         total_count = 0
         for batch in self.batches:
-            error_sum, denominator = family.monitor_metric(batch.prediction, batch.target_stats, batch.sample_weight)
+            error_sum, denominator = family.monitoring_loss(batch.state, batch.target_stats, batch.sample_weight)
             total_error += error_sum
             total_weight += denominator
-            total_sum += float(np.sum(batch.prediction))
-            total_count += batch.prediction.shape[0]
+            total_sum += float(np.sum(family.predict_from_state(batch.state)))
+            total_count += batch.state.shape[0]
         return total_error / max(total_weight, 1.0), total_sum / max(total_count, 1), total_weight
 
 
@@ -512,7 +512,7 @@ class GpuSingleTreeTrainer:
                     bins=cp.asnumpy(cache_bins_gpu),
                     target_stats=batch.target_stats.astype(np.float32, copy=False),
                     sample_weight=None if batch.sample_weight is None else batch.sample_weight.astype(np.float32, copy=False),
-                    prediction=np.empty((batch.target_stats.shape[0], prediction_dim), dtype=np.float32),
+                    state=np.empty((batch.target_stats.shape[0], prediction_dim), dtype=np.float32),
                 )
             )
             if cache_profile is not None:
@@ -568,10 +568,10 @@ class GpuSingleTreeTrainer:
         return cp.asnumpy(pred_gpu)
 
     def predict_model_batch(self, model: AdditiveEnsemble, x: np.ndarray) -> np.ndarray:
-        pred = np.repeat(model.base_prediction[None, :], x.shape[0], axis=0)
+        pred = np.repeat(model.base_state[None, :], x.shape[0], axis=0)
         for tree in model.trees:
-            pred += model.learning_rate * self.predict_tree_batch(tree, x=x)
-        return self.family.project_prediction(pred)
+            self.family.apply_update(pred, self.predict_tree_batch(tree, x=x), model.learning_rate)
+        return self.family.predict_from_state(pred)
 
     def _leaf_value(self, target_stat_sum: np.ndarray, total_weight: float) -> np.ndarray:
         return target_stat_sum / (total_weight + self.tree_config.get("reg_lambda"))
@@ -631,7 +631,7 @@ class GpuSingleTreeTrainer:
                     candidate_slot_of_node_gpu,
                     row_slot_gpu,
                 )
-                residual_gpu = cp.asarray(batch.target_stats - batch.prediction, dtype=cp.float32)
+                residual_gpu = cp.asarray(self.family.preconditioned_target(batch.state, batch.target_stats), dtype=cp.float32)
                 if batch.sample_weight is None:
                     build_candidate_histograms_unweighted[blocks_1d, threads_per_block](
                         bins_gpu,
@@ -849,8 +849,7 @@ class GpuSingleTreeTrainer:
     def update_training_cache(self, training_cache: TrainingCache, tree: SingleTree, learning_rate: float, profile: bool, training_profile: dict | None, round_idx: int):
         update_profile = _start_profile(f"cache_update_round_{round_idx + 1}") if profile else None
         for batch in training_cache:
-            batch.prediction += learning_rate * self.predict_tree_batch(tree, bins=batch.bins)
-            batch.prediction[...] = self.family.project_prediction(batch.prediction)
+            self.family.apply_update(batch.state, self.predict_tree_batch(tree, bins=batch.bins), learning_rate)
             if update_profile is not None:
                 _update_profile(update_profile)
             if training_profile is not None:
@@ -861,7 +860,7 @@ class GpuSingleTreeTrainer:
 
     def evaluate_cached_training_stream(self, training_cache: TrainingCache, profile: bool) -> tuple[float, float]:
         evaluation_profile = _start_profile("evaluation") if profile else None
-        train_metric, mean_sum_prob, _ = training_cache.monitor_metric(self.family)
+        train_metric, mean_sum_prob, _ = training_cache.monitoring_loss(self.family)
         if evaluation_profile is not None:
             _update_profile(evaluation_profile)
             _finish_profile(evaluation_profile)
@@ -884,7 +883,7 @@ class GpuSingleTreeTrainer:
                 pred_cpu = model.predict_batch(
                     batch.x,
                     predict_method="cpu",
-                    project_prediction=self.family.project_prediction,
+                    predict_from_state=self.family.predict_from_state,
                     cpu_predictor=self.training_config.get("cpu_predictor"),
                 )
             fresh_sum_prob += float(np.sum(pred_cpu))
@@ -899,16 +898,16 @@ class GpuSingleTreeTrainer:
         cuts_cpu, cuts_gpu = self.build_cuts(provider_kwargs)
         training_profile = _start_profile("training") if profile else None
         training_cache = self.build_training_cache(cuts_gpu, profile, training_profile)
-        base_prediction = self.family.base_prediction(training_cache.target_stat_mean())
-        training_cache.initialize_predictions(base_prediction)
+        base_state = self.family.base_state(training_cache.target_stat_mean())
+        training_cache.initialize_states(base_state)
         model = AdditiveEnsemble(
             prediction_dim=self.dataset_config.get("n_classes"),
-            base_prediction=base_prediction,
+            base_state=base_state,
             learning_rate=self.training_config.get("learning_rate"),
         )
 
         loss_history = []
-        initial_loss, initial_mean_sum_prob, _ = training_cache.monitor_metric(self.family)
+        initial_loss, initial_mean_sum_prob, _ = training_cache.monitoring_loss(self.family)
         loss_history.append(initial_loss)
         print(f"Initial train {self.family.monitor_name}: {initial_loss:.6f}")
 
@@ -916,7 +915,7 @@ class GpuSingleTreeTrainer:
             tree = self.fit_tree(training_cache, cuts_cpu, profile, training_profile, round_idx)
             model.add_tree(tree)
             self.update_training_cache(training_cache, tree, model.learning_rate, profile, training_profile, round_idx)
-            round_loss, _, _ = training_cache.monitor_metric(self.family)
+            round_loss, _, _ = training_cache.monitoring_loss(self.family)
             loss_history.append(round_loss)
             print(
                 f"After round {round_idx + 1}: train {self.family.monitor_name}={round_loss:.6f} "

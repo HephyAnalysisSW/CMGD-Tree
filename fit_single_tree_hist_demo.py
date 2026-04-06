@@ -169,7 +169,7 @@ if __name__ == "__main__":
                 x,
                 predict_method=TRAINING_CONFIG.get("predict_method"),
                 gpu_predictor=lambda batch: TRAINER.predict_model_batch(model, batch),
-                project_prediction=FAMILY.project_prediction,
+                predict_from_state=FAMILY.predict_from_state,
                 cpu_predictor=TRAINING_CONFIG.get("cpu_predictor"),
             ),
             n_classes=DATASET_CONFIG.get("n_classes"),

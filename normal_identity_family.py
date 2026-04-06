@@ -28,6 +28,99 @@ class StreamBatch:
     sample_weight: np.ndarray | None = None
 
 
+class BoostingFamily:
+    """User-facing interface for uncurved boosting families.
+
+    The trainer treats a family as a provider of:
+
+    - target statistics `T(y)`
+    - an initial model state
+    - a map from model state to the dual prediction used in residuals
+    - a pseudo-response / preconditioned target for tree fitting
+    - an additive state update rule
+    - a monitoring loss for reporting
+
+    For the current MGD implementation, NGD-specific pieces collapse to simple
+    identities:
+
+    - the stored state is already the fitted coordinate
+    - `dual_prediction(state)` is the identity map
+    - `preconditioned_target(state, T)` is just `T - state`
+
+    Later NGD families can keep the same trainer interface and override only
+    these hooks with nonlinear coordinate maps and Fisher-preconditioned targets.
+    """
+
+    prediction_dim: int
+    class_weights: np.ndarray | None
+    use_weights: bool
+    name: str
+    monitor_name: str
+    provider_class: type
+
+    def provider_kwargs(self, dataset_config: dict) -> dict:
+        """Return kwargs used to construct the streamed toy provider."""
+        raise NotImplementedError
+
+    def stream_batches(self, dataset_config: dict) -> Iterator[StreamBatch]:
+        """Yield streamed training/evaluation batches."""
+        raise NotImplementedError
+
+    def base_state(self, target_stat_mean: np.ndarray) -> np.ndarray:
+        """Return the initial model state for boosting.
+
+        `target_stat_mean` is the weighted global mean of the target statistics
+        over the cached training stream.
+        """
+        raise NotImplementedError
+
+    def project_state(self, state_cpu: np.ndarray) -> np.ndarray:
+        """Project state values back into the valid domain if needed."""
+        return state_cpu
+
+    def predict_from_state(self, state_cpu: np.ndarray) -> np.ndarray:
+        """Map the stored state to the user-facing prediction.
+
+        For the current MGD families this is the identity map up to optional
+        domain projection.
+        """
+        return self.project_state(state_cpu)
+
+    def dual_prediction(self, state_cpu: np.ndarray) -> np.ndarray:
+        """Map the stored state to the dual prediction used in residuals.
+
+        MGD is recovered by making this the identity map.
+        """
+        return self.predict_from_state(state_cpu)
+
+    def preconditioned_target(self, state_cpu: np.ndarray, target_stats_cpu: np.ndarray) -> np.ndarray:
+        """Return the regression target fitted by the tree.
+
+        For MGD this is the dual residual `T(y) - eta*(x)`.
+        For NGD this becomes the Fisher-preconditioned pseudo-response.
+        """
+        return target_stats_cpu - self.dual_prediction(state_cpu)
+
+    def apply_update(self, state_cpu: np.ndarray, tree_output_cpu: np.ndarray, learning_rate: float) -> np.ndarray:
+        """Apply one additive tree update to the stored state in place."""
+        state_cpu += learning_rate * tree_output_cpu
+        state_cpu[...] = self.project_state(state_cpu)
+        return state_cpu
+
+    def monitoring_loss(
+        self,
+        state_cpu: np.ndarray,
+        target_stats_cpu: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+    ) -> tuple[float, float]:
+        """Return summed monitoring loss and its normalization weight."""
+        raise NotImplementedError
+
+    def plot_config(self, n_features: int, plot_mode: str = "auto") -> dict:
+        """Return plotting configuration for the demo diagnostics."""
+        raise NotImplementedError
+
+
 def _class_weight_vector(tree_config: dict, dim: int) -> tuple[np.ndarray | None, bool]:
     configured = tree_config.get("class_weights")
     if configured is None:
@@ -123,7 +216,7 @@ class PoissonToyStream:
 
 
 @dataclass
-class NormalIdentityFamily:
+class NormalIdentityFamily(BoostingFamily):
     prediction_dim: int
     class_weights: np.ndarray | None
     use_weights: bool
@@ -151,18 +244,16 @@ class NormalIdentityFamily:
     def stream_batches(self, dataset_config: dict) -> Iterator[StreamBatch]:
         yield from self.provider_class(**self.provider_kwargs(dataset_config))
 
-    def base_prediction(self, target_stat_mean: np.ndarray) -> np.ndarray:
+    def base_state(self, target_stat_mean: np.ndarray) -> np.ndarray:
         return target_stat_mean.astype(np.float32, copy=True)
 
-    def project_prediction(self, pred_cpu: np.ndarray) -> np.ndarray:
-        return pred_cpu
-
-    def monitor_metric(
+    def monitoring_loss(
         self,
-        pred_cpu: np.ndarray,
+        state_cpu: np.ndarray,
         target_stats_cpu: np.ndarray,
         sample_weight: np.ndarray | None = None,
     ) -> tuple[float, float]:
+        pred_cpu = self.predict_from_state(state_cpu)
         pred_sq = np.sum(pred_cpu * pred_cpu, axis=1)
         target_prob = np.sum(pred_cpu * target_stats_cpu, axis=1)
         per_row = 1.0 - 2.0 * target_prob + pred_sq
@@ -191,7 +282,7 @@ class NormalIdentityFamily:
 
 
 @dataclass
-class PoissonFamily:
+class PoissonFamily(BoostingFamily):
     prediction_dim: int
     class_weights: np.ndarray | None
     use_weights: bool
@@ -219,27 +310,27 @@ class PoissonFamily:
     def stream_batches(self, dataset_config: dict) -> Iterator[StreamBatch]:
         yield from self.provider_class(**self.provider_kwargs(dataset_config))
 
-    def base_prediction(self, target_stat_mean: np.ndarray) -> np.ndarray:
+    def base_state(self, target_stat_mean: np.ndarray) -> np.ndarray:
         return np.maximum(np.ones_like(target_stat_mean, dtype=np.float32), self.clip_epsilon)
 
-    def project_prediction(self, pred_cpu: np.ndarray) -> np.ndarray:
-        pred_proj = np.maximum(pred_cpu, self.clip_epsilon)
-        if np.any(pred_cpu < 0.0):
+    def project_state(self, state_cpu: np.ndarray) -> np.ndarray:
+        pred_proj = np.maximum(state_cpu, self.clip_epsilon)
+        if np.any(state_cpu < 0.0):
             warnings.warn("Negative Poisson predictions encountered; clipping to epsilon.", RuntimeWarning)
         return pred_proj
 
-    def monitor_metric(
+    def monitoring_loss(
         self,
-        pred_cpu: np.ndarray,
+        state_cpu: np.ndarray,
         target_stats_cpu: np.ndarray,
         sample_weight: np.ndarray | None = None,
     ) -> tuple[float, float]:
-        pred_proj = self.project_prediction(pred_cpu).astype(np.float64, copy=False)
+        pred_proj = self.predict_from_state(state_cpu).astype(np.float64, copy=False)
         y64 = target_stats_cpu.astype(np.float64, copy=False)
         lgamma = np.vectorize(math.lgamma)
         per_row = np.sum(pred_proj - y64 * np.log(pred_proj) + lgamma(y64 + 1.0), axis=1)
         if sample_weight is None:
-            return float(np.sum(per_row)), float(pred_cpu.shape[0])
+            return float(np.sum(per_row)), float(state_cpu.shape[0])
         return float(np.sum(sample_weight * per_row)), float(np.sum(sample_weight))
 
     def plot_config(self, n_features: int, plot_mode: str = "auto") -> dict:

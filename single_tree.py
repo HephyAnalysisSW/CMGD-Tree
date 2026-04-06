@@ -9,7 +9,7 @@ from numba import njit, prange
 @njit(cache=True)
 def _predict_forest_numba(
     x: np.ndarray,
-    base_prediction: np.ndarray,
+    base_state: np.ndarray,
     tree_offsets: np.ndarray,
     split_feature: np.ndarray,
     split_threshold: np.ndarray,
@@ -20,11 +20,11 @@ def _predict_forest_numba(
     pred_out: np.ndarray,
 ):
     n_rows = x.shape[0]
-    pred_dim = base_prediction.shape[0]
+    pred_dim = base_state.shape[0]
     n_trees = tree_offsets.shape[0] - 1
     for i in range(n_rows):
         for c in range(pred_dim):
-            pred_out[i, c] = base_prediction[c]
+            pred_out[i, c] = base_state[c]
         for tree_idx in range(n_trees):
             node = tree_offsets[tree_idx]
             while is_leaf[node] == 0:
@@ -41,7 +41,7 @@ def _predict_forest_numba(
 @njit(cache=True, parallel=True)
 def _predict_forest_numba_parallel(
     x: np.ndarray,
-    base_prediction: np.ndarray,
+    base_state: np.ndarray,
     tree_offsets: np.ndarray,
     split_feature: np.ndarray,
     split_threshold: np.ndarray,
@@ -52,11 +52,11 @@ def _predict_forest_numba_parallel(
     pred_out: np.ndarray,
 ):
     n_rows = x.shape[0]
-    pred_dim = base_prediction.shape[0]
+    pred_dim = base_state.shape[0]
     n_trees = tree_offsets.shape[0] - 1
     for i in prange(n_rows):
         for c in range(pred_dim):
-            pred_out[i, c] = base_prediction[c]
+            pred_out[i, c] = base_state[c]
         for tree_idx in range(n_trees):
             node = tree_offsets[tree_idx]
             while is_leaf[node] == 0:
@@ -73,7 +73,7 @@ def _predict_forest_numba_parallel(
 @njit(cache=True)
 def _predict_forest_numba_dim4(
     x: np.ndarray,
-    base_prediction: np.ndarray,
+    base_state: np.ndarray,
     tree_offsets: np.ndarray,
     split_feature: np.ndarray,
     split_threshold: np.ndarray,
@@ -85,10 +85,10 @@ def _predict_forest_numba_dim4(
 ):
     n_rows = x.shape[0]
     n_trees = tree_offsets.shape[0] - 1
-    base0 = base_prediction[0]
-    base1 = base_prediction[1]
-    base2 = base_prediction[2]
-    base3 = base_prediction[3]
+    base0 = base_state[0]
+    base1 = base_state[1]
+    base2 = base_state[2]
+    base3 = base_state[3]
     for i in range(n_rows):
         pred0 = base0
         pred1 = base1
@@ -115,7 +115,7 @@ def _predict_forest_numba_dim4(
 @njit(cache=True, parallel=True)
 def _predict_forest_numba_dim4_parallel(
     x: np.ndarray,
-    base_prediction: np.ndarray,
+    base_state: np.ndarray,
     tree_offsets: np.ndarray,
     split_feature: np.ndarray,
     split_threshold: np.ndarray,
@@ -127,10 +127,10 @@ def _predict_forest_numba_dim4_parallel(
 ):
     n_rows = x.shape[0]
     n_trees = tree_offsets.shape[0] - 1
-    base0 = base_prediction[0]
-    base1 = base_prediction[1]
-    base2 = base_prediction[2]
-    base3 = base_prediction[3]
+    base0 = base_state[0]
+    base1 = base_state[1]
+    base2 = base_state[2]
+    base3 = base_state[3]
     for i in prange(n_rows):
         pred0 = base0
         pred1 = base1
@@ -291,9 +291,9 @@ class SingleTree:
 
 
 class AdditiveEnsemble:
-    def __init__(self, prediction_dim: int, base_prediction: np.ndarray, learning_rate: float):
+    def __init__(self, prediction_dim: int, base_state: np.ndarray, learning_rate: float):
         self.prediction_dim = prediction_dim
-        self.base_prediction = np.asarray(base_prediction, dtype=np.float32)
+        self.base_state = np.asarray(base_state, dtype=np.float32)
         self.learning_rate = float(learning_rate)
         self.trees: list[SingleTree] = []
         self._numba_tree_offsets = None
@@ -346,7 +346,7 @@ class AdditiveEnsemble:
             kernel = _predict_forest_numba_parallel if cpu_predictor == "numba_parallel" else _predict_forest_numba
         kernel(
             x,
-            self.base_prediction,
+            self.base_state,
             self._numba_tree_offsets,
             self._numba_split_feature,
             self._numba_split_threshold,
@@ -358,22 +358,22 @@ class AdditiveEnsemble:
         )
         return pred
 
-    def predict_batch_cpu(self, x: np.ndarray, project_prediction, cpu_predictor: str = "index") -> np.ndarray:
+    def predict_batch_cpu(self, x: np.ndarray, predict_from_state, cpu_predictor: str = "index") -> np.ndarray:
         if cpu_predictor in {"numba", "numba_parallel"}:
             pred = self._predict_batch_cpu_numba(x, cpu_predictor)
-            return project_prediction(pred)
-        pred = np.repeat(self.base_prediction[None, :], x.shape[0], axis=0)
+            return predict_from_state(pred)
+        pred = np.repeat(self.base_state[None, :], x.shape[0], axis=0)
         for tree in self.trees:
             pred += self.learning_rate * tree.predict_batch_cpu(x, cpu_predictor=cpu_predictor)
-        return project_prediction(pred)
+        return predict_from_state(pred)
 
-    def predict_batch(self, x: np.ndarray, predict_method: str = "cpu", gpu_predictor=None, project_prediction=None, cpu_predictor: str = "index") -> np.ndarray:
+    def predict_batch(self, x: np.ndarray, predict_method: str = "cpu", gpu_predictor=None, predict_from_state=None, cpu_predictor: str = "index") -> np.ndarray:
         if predict_method == "gpu":
             if gpu_predictor is None:
                 raise ValueError("gpu_predictor is required for GPU prediction.")
             pred = gpu_predictor(x)
         else:
-            pred = self.predict_batch_cpu(x, project_prediction, cpu_predictor=cpu_predictor)
-        if project_prediction is None or predict_method != "gpu":
+            pred = self.predict_batch_cpu(x, predict_from_state, cpu_predictor=cpu_predictor)
+        if predict_from_state is None or predict_method != "gpu":
             return pred
-        return project_prediction(pred)
+        return predict_from_state(pred)

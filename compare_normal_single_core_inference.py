@@ -157,7 +157,7 @@ def build_our_model():
         pred = model.predict_batch(
             batch.x,
             predict_method="cpu",
-            project_prediction=family.project_prediction,
+            predict_from_state=family.predict_from_state,
             cpu_predictor=COMPARE_CONFIG["cpu_predictor"],
         )
         fresh_sum += float(np.sum(pred))
