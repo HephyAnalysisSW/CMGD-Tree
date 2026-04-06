@@ -37,6 +37,16 @@ class BoostingFamily:
     monitor_name: str
     provider_class: type
 
+    @classmethod
+    def example_defaults(cls) -> dict[str, dict]:
+        """Return example-specific config defaults grouped by config section.
+
+        These defaults belong to the concrete example/problem specification,
+        not to the generic CLI. The entrypoint may apply them only for keys
+        that the user did not override explicitly.
+        """
+        return {}
+
     def provider_kwargs(self, dataset_config: dict) -> dict:
         """Return kwargs used to construct the streamed toy provider."""
         raise NotImplementedError

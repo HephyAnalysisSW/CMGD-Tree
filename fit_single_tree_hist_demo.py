@@ -7,7 +7,7 @@ import os
 from numba import set_num_threads
 
 from cpu_single_tree_trainer import CpuSingleTreeTrainer
-from families import family_from_configs
+from families import family_class_from_name, family_from_configs
 from gpu_single_tree_trainer import GpuSingleTreeTrainer
 from plot_feature_ratios import make_family_diagnostic_plots
 
@@ -160,10 +160,18 @@ def _resolve_training_backend(requested_backend: str) -> str:
     return "cpu"
 
 
+def _apply_example_defaults(modified_keys: set[str]) -> None:
+    family_cls = family_class_from_name(TREE_CONFIG.get("family", "normal_identity"))
+    for group_name, overrides in family_cls.example_defaults().items():
+        group = CONFIG_GROUPS[group_name]
+        for key, value in overrides.items():
+            if key not in modified_keys:
+                group[key] = value
+
+
 ARGS = _parse_args()
 MODIFIED_KEYS = set(ARGS.modify[0::2])
-if TREE_CONFIG.get("family") == "heteroskedastic_normal" and "learning_rate" not in MODIFIED_KEYS:
-    TRAINING_CONFIG["learning_rate"] = 0.2
+_apply_example_defaults(MODIFIED_KEYS)
 RESOLVED_TRAINING_BACKEND = _resolve_training_backend(TRAINING_CONFIG.get("training_backend"))
 TRAINING_CONFIG["training_backend"] = RESOLVED_TRAINING_BACKEND
 if TRAINING_CONFIG.get("cpu_threads", 0) <= 0:

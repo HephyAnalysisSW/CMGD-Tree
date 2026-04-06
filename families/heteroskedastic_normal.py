@@ -21,6 +21,22 @@ class HeteroskedasticNormalFamily(BoostingFamily):
     min_variance: float = 0.1
 
     @classmethod
+    def example_defaults(cls) -> dict[str, dict]:
+        return {
+            "tree": {
+                "max_depth": 3,
+                "max_leaves": 8,
+            },
+            "dataset": {
+                "n_features": 4,
+                "n_classes": 2,
+            },
+            "training": {
+                "learning_rate": 0.2,
+            },
+        }
+
+    @classmethod
     def from_configs(cls, tree_config: dict, dataset_config: dict) -> "HeteroskedasticNormalFamily":
         if dataset_config.get("n_classes") != 2:
             raise ValueError("heteroskedastic_normal expects n_classes=2 for target stats [y, y^2].")

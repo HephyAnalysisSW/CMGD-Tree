@@ -151,7 +151,7 @@ Scalar heteroskedastic normal toy run with plots:
 python fit_single_tree_hist_demo.py \
   --print-trees \
   --plot \
-  --modify family heteroskedastic_normal n_features 4 n_classes 2 max_depth 3 max_leaves 8
+  --modify family heteroskedastic_normal
 ```
 
 CPU inference with the compiled multicore predictor:
@@ -170,13 +170,23 @@ python fit_single_tree_hist_demo.py \
 
 The global default learning rate is `1.0`.
 
-For `heteroskedastic_normal`, the demo automatically uses `learning_rate=0.2` unless you override it explicitly.
+Concrete toy examples may provide their own example defaults for tree, dataset, and
+training settings. These are part of the example specification rather than the generic
+CLI. They are applied only for keys you did not override explicitly.
+
+The current `heteroskedastic_normal` example uses:
+
+- `n_features=4`
+- `n_classes=2`
+- `max_depth=3`
+- `max_leaves=8`
+- `learning_rate=0.2`
 
 Examples:
 
 ```bash
-python fit_single_tree_hist_demo.py --modify family heteroskedastic_normal n_classes 2
-python fit_single_tree_hist_demo.py --modify family heteroskedastic_normal n_classes 2 learning_rate 1.0
+python fit_single_tree_hist_demo.py --modify family heteroskedastic_normal
+python fit_single_tree_hist_demo.py --modify family heteroskedastic_normal learning_rate 1.0
 ```
 
 ## Families
@@ -193,7 +203,7 @@ Select one with:
 
 ```bash
 python fit_single_tree_hist_demo.py --modify family normal_identity
-python fit_single_tree_hist_demo.py --modify family heteroskedastic_normal n_classes 2
+python fit_single_tree_hist_demo.py --modify family heteroskedastic_normal
 python fit_single_tree_hist_demo.py --modify family poisson
 python fit_single_tree_hist_demo.py --modify family poisson_ngd
 ```
