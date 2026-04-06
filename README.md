@@ -197,7 +197,7 @@ The current `heteroskedastic_normal` example uses:
 - `n_batches=24`
 - `max_depth=2`
 - `max_leaves=4`
-- `n_boost_rounds=10`
+- `n_boost_rounds=50`
 - `learning_rate=0.2`
 
 Examples:
@@ -213,7 +213,7 @@ The current `gamma` example uses:
 - `n_classes=4`
 - `max_depth=3`
 - `max_leaves=8`
-- `n_boost_rounds=10`
+- `n_boost_rounds=50`
 - `learning_rate=0.2`
 
 Examples:
@@ -229,7 +229,7 @@ The current `negative_binomial` example uses:
 - `n_classes=4`
 - `max_depth=3`
 - `max_leaves=8`
-- `n_boost_rounds=10`
+- `n_boost_rounds=50`
 - `learning_rate=0.2`
 
 Examples:

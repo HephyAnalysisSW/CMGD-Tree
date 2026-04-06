@@ -34,7 +34,7 @@ class NegativeBinomialMGDFamily(BoostingFamily):
                 "n_classes": 4,
             },
             "training": {
-                "n_boost_rounds": 10,
+                "n_boost_rounds": 50,
                 "learning_rate": 0.2,
             },
         }
