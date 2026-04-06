@@ -43,16 +43,40 @@ def route_rows_to_candidate_slots_cpu(
         out_slot[i] = candidate_slot_of_node[node]
 
 
-@njit(cache=True, parallel=True)
-def route_rows_to_candidate_slots_cpu_parallel(
+@njit(cache=True)
+def predict_rows_bins_cpu(
     bins,
     split_feature,
     split_bin,
     left_child,
     right_child,
     is_leaf,
-    candidate_slot_of_node,
-    out_slot,
+    leaf_value,
+    pred_out,
+):
+    for i in range(bins.shape[0]):
+        node = 0
+        while is_leaf[node] == 0:
+            feature = split_feature[node]
+            threshold_bin = split_bin[node]
+            if bins[i, feature] <= threshold_bin:
+                node = left_child[node]
+            else:
+                node = right_child[node]
+        for c in range(pred_out.shape[1]):
+            pred_out[i, c] = leaf_value[node, c]
+
+
+@njit(cache=True, parallel=True)
+def predict_rows_bins_cpu_parallel(
+    bins,
+    split_feature,
+    split_bin,
+    left_child,
+    right_child,
+    is_leaf,
+    leaf_value,
+    pred_out,
 ):
     for i in prange(bins.shape[0]):
         node = 0
@@ -63,7 +87,8 @@ def route_rows_to_candidate_slots_cpu_parallel(
                 node = left_child[node]
             else:
                 node = right_child[node]
-        out_slot[i] = candidate_slot_of_node[node]
+        for c in range(pred_out.shape[1]):
+            pred_out[i, c] = leaf_value[node, c]
 
 
 @njit(cache=True)
@@ -79,19 +104,6 @@ def build_candidate_histograms_unweighted_cpu(bins, target_stats, row_slot, hist
                     hist_sum[slot, f, b, c] += target_stats[i, c]
 
 
-@njit(cache=True, parallel=True)
-def build_candidate_histograms_unweighted_cpu_parallel(bins, target_stats, row_slot, hist_count, hist_weight, hist_sum):
-    for f in prange(bins.shape[1]):
-        for i in range(bins.shape[0]):
-            slot = row_slot[i]
-            if slot >= 0:
-                b = bins[i, f]
-                hist_count[slot, f, b] += 1
-                hist_weight[slot, f, b] += 1.0
-                for c in range(target_stats.shape[1]):
-                    hist_sum[slot, f, b, c] += target_stats[i, c]
-
-
 @njit(cache=True)
 def build_candidate_histograms_weighted_cpu(bins, target_stats, sample_weight, row_slot, hist_count, hist_weight, hist_sum):
     for i in range(bins.shape[0]):
@@ -99,20 +111,6 @@ def build_candidate_histograms_weighted_cpu(bins, target_stats, sample_weight, r
         if slot >= 0:
             weight = sample_weight[i]
             for f in range(bins.shape[1]):
-                b = bins[i, f]
-                hist_count[slot, f, b] += 1
-                hist_weight[slot, f, b] += weight
-                for c in range(target_stats.shape[1]):
-                    hist_sum[slot, f, b, c] += weight * target_stats[i, c]
-
-
-@njit(cache=True, parallel=True)
-def build_candidate_histograms_weighted_cpu_parallel(bins, target_stats, sample_weight, row_slot, hist_count, hist_weight, hist_sum):
-    for f in prange(bins.shape[1]):
-        for i in range(bins.shape[0]):
-            slot = row_slot[i]
-            if slot >= 0:
-                weight = sample_weight[i]
                 b = bins[i, f]
                 hist_count[slot, f, b] += 1
                 hist_weight[slot, f, b] += weight
@@ -146,141 +144,6 @@ def evaluate_slot_bests_cpu(
     pred_dim = hist_sum.shape[3]
 
     for slot in range(n_slots):
-        parent_count = 0
-        parent_weight = 0.0
-        for b in range(n_bins):
-            parent_count += hist_count[slot, 0, b]
-            parent_weight += hist_weight[slot, 0, b]
-        slot_parent_count[slot] = parent_count
-        slot_parent_weight[slot] = parent_weight
-        for c in range(pred_dim):
-            s = 0.0
-            for b in range(n_bins):
-                s += hist_sum[slot, 0, b, c]
-            slot_parent_sum[slot, c] = s
-
-        best_gain = -1.0e30
-        best_feature = -1
-        best_bin = -1
-        best_left_count = 0
-        best_right_count = 0
-        best_left_weight = 0.0
-        best_right_weight = 0.0
-
-        if parent_count <= 0 or parent_weight <= 0.0:
-            slot_best_gain[slot] = best_gain
-            slot_best_feature[slot] = best_feature
-            slot_best_bin[slot] = best_bin
-            slot_best_left_count[slot] = best_left_count
-            slot_best_right_count[slot] = best_right_count
-            slot_best_left_weight[slot] = best_left_weight
-            slot_best_right_weight[slot] = best_right_weight
-            for c in range(pred_dim):
-                slot_best_left_sum[slot, c] = 0.0
-                slot_best_right_sum[slot, c] = 0.0
-            continue
-
-        for feature in range(n_features):
-            parent_score_num = 0.0
-            parent_sum = np.zeros(pred_dim, dtype=np.float32)
-            for c in range(pred_dim):
-                s = 0.0
-                for b in range(n_bins):
-                    s += hist_sum[slot, feature, b, c]
-                parent_sum[c] = s
-                parent_score_num += s * s
-            parent_score = parent_score_num / (parent_weight + reg_lambda)
-
-            left_count = 0
-            left_weight = 0.0
-            left_sum = np.zeros(pred_dim, dtype=np.float32)
-
-            feature_best_gain = -1.0e30
-            feature_best_bin = -1
-            feature_best_left_count = 0
-            feature_best_right_count = 0
-            feature_best_left_weight = 0.0
-            feature_best_right_weight = 0.0
-            feature_best_left_sum = np.zeros(pred_dim, dtype=np.float32)
-            feature_best_right_sum = np.zeros(pred_dim, dtype=np.float32)
-
-            for split_b in range(n_bins - 1):
-                left_count += hist_count[slot, feature, split_b]
-                left_weight += hist_weight[slot, feature, split_b]
-                right_count = parent_count - left_count
-                right_weight = parent_weight - left_weight
-
-                for c in range(pred_dim):
-                    left_sum[c] += hist_sum[slot, feature, split_b, c]
-
-                if left_count < min_samples_leaf or right_count < min_samples_leaf or left_weight <= 0.0 or right_weight <= 0.0:
-                    continue
-
-                left_score_num = 0.0
-                right_score_num = 0.0
-                for c in range(pred_dim):
-                    right_sum_c = parent_sum[c] - left_sum[c]
-                    left_score_num += left_sum[c] * left_sum[c]
-                    right_score_num += right_sum_c * right_sum_c
-                gain = left_score_num / (left_weight + reg_lambda) + right_score_num / (right_weight + reg_lambda) - parent_score
-                if gain > feature_best_gain:
-                    feature_best_gain = gain
-                    feature_best_bin = split_b
-                    feature_best_left_count = left_count
-                    feature_best_right_count = right_count
-                    feature_best_left_weight = left_weight
-                    feature_best_right_weight = right_weight
-                    for c in range(pred_dim):
-                        feature_best_left_sum[c] = left_sum[c]
-                        feature_best_right_sum[c] = parent_sum[c] - left_sum[c]
-
-            if feature_best_gain > best_gain:
-                best_gain = feature_best_gain
-                best_feature = feature
-                best_bin = feature_best_bin
-                best_left_count = feature_best_left_count
-                best_right_count = feature_best_right_count
-                best_left_weight = feature_best_left_weight
-                best_right_weight = feature_best_right_weight
-                for c in range(pred_dim):
-                    slot_best_left_sum[slot, c] = feature_best_left_sum[c]
-                    slot_best_right_sum[slot, c] = feature_best_right_sum[c]
-
-        slot_best_gain[slot] = best_gain
-        slot_best_feature[slot] = best_feature
-        slot_best_bin[slot] = best_bin
-        slot_best_left_count[slot] = best_left_count
-        slot_best_right_count[slot] = best_right_count
-        slot_best_left_weight[slot] = best_left_weight
-        slot_best_right_weight[slot] = best_right_weight
-
-
-@njit(cache=True, parallel=True)
-def evaluate_slot_bests_cpu_parallel(
-    hist_count,
-    hist_weight,
-    hist_sum,
-    min_samples_leaf,
-    reg_lambda,
-    slot_parent_count,
-    slot_parent_weight,
-    slot_parent_sum,
-    slot_best_gain,
-    slot_best_feature,
-    slot_best_bin,
-    slot_best_left_count,
-    slot_best_right_count,
-    slot_best_left_weight,
-    slot_best_right_weight,
-    slot_best_left_sum,
-    slot_best_right_sum,
-):
-    n_slots = hist_count.shape[0]
-    n_features = hist_count.shape[1]
-    n_bins = hist_count.shape[2]
-    pred_dim = hist_sum.shape[3]
-
-    for slot in prange(n_slots):
         parent_count = 0
         parent_weight = 0.0
         for b in range(n_bins):
@@ -463,6 +326,9 @@ class CpuSingleTreeTrainer:
         self.cpu_threads = int(training_config.get("cpu_threads"))
         set_num_threads(self.cpu_threads)
 
+    def _set_threads(self, n_threads: int):
+        set_num_threads(max(1, int(n_threads)))
+
     @property
     def device_name(self) -> str:
         return "CPU"
@@ -529,16 +395,28 @@ class CpuSingleTreeTrainer:
         if x is not None:
             return tree.predict_batch(x, predict_method="cpu")
         pred = np.empty((bins.shape[0], tree.prediction_dim), dtype=np.float32)
-        for i in range(bins.shape[0]):
-            node = 0
-            while tree.is_leaf_cpu[node] == 0:
-                feature = tree.split_feature_cpu[node]
-                threshold_bin = tree.split_bin_cpu[node]
-                if bins[i, feature] <= threshold_bin:
-                    node = tree.left_child_cpu[node]
-                else:
-                    node = tree.right_child_cpu[node]
-            pred[i] = tree.leaf_value_cpu[node]
+        if self.cpu_threads > 1:
+            predict_rows_bins_cpu_parallel(
+                bins,
+                tree.split_feature_cpu,
+                tree.split_bin_cpu,
+                tree.left_child_cpu,
+                tree.right_child_cpu,
+                tree.is_leaf_cpu,
+                tree.leaf_value_cpu,
+                pred,
+            )
+        else:
+            predict_rows_bins_cpu(
+                bins,
+                tree.split_feature_cpu,
+                tree.split_bin_cpu,
+                tree.left_child_cpu,
+                tree.right_child_cpu,
+                tree.is_leaf_cpu,
+                tree.leaf_value_cpu,
+                pred,
+            )
         return pred
 
     def predict_model_batch(self, model: AdditiveEnsemble, x: np.ndarray) -> np.ndarray:
@@ -584,39 +462,19 @@ class CpuSingleTreeTrainer:
 
             for batch in training_cache:
                 row_slot = np.empty((batch.bins.shape[0],), dtype=np.int32)
-                if self.cpu_threads > 1:
-                    route_rows_to_candidate_slots_cpu_parallel(
-                        batch.bins,
-                        split_feature_cpu,
-                        split_bin_cpu,
-                        left_child_cpu,
-                        right_child_cpu,
-                        is_leaf_cpu,
-                        candidate_slot_of_node_cpu,
-                        row_slot,
-                    )
-                else:
-                    route_rows_to_candidate_slots_cpu(
-                        batch.bins,
-                        split_feature_cpu,
-                        split_bin_cpu,
-                        left_child_cpu,
-                        right_child_cpu,
-                        is_leaf_cpu,
-                        candidate_slot_of_node_cpu,
-                        row_slot,
-                    )
+                route_rows_to_candidate_slots_cpu(
+                    batch.bins,
+                    split_feature_cpu,
+                    split_bin_cpu,
+                    left_child_cpu,
+                    right_child_cpu,
+                    is_leaf_cpu,
+                    candidate_slot_of_node_cpu,
+                    row_slot,
+                )
                 residual = self.family.preconditioned_target(batch.state, batch.target_stats).astype(np.float32, copy=False)
-                if batch.sample_weight is None and self.cpu_threads > 1:
-                    build_candidate_histograms_unweighted_cpu_parallel(
-                        batch.bins, residual, row_slot, hist_count, hist_weight, hist_sum
-                    )
-                elif batch.sample_weight is None:
+                if batch.sample_weight is None:
                     build_candidate_histograms_unweighted_cpu(batch.bins, residual, row_slot, hist_count, hist_weight, hist_sum)
-                elif self.cpu_threads > 1:
-                    build_candidate_histograms_weighted_cpu_parallel(
-                        batch.bins, residual, batch.sample_weight, row_slot, hist_count, hist_weight, hist_sum
-                    )
                 else:
                     build_candidate_histograms_weighted_cpu(
                         batch.bins, residual, batch.sample_weight, row_slot, hist_count, hist_weight, hist_sum
@@ -639,46 +497,25 @@ class CpuSingleTreeTrainer:
             slot_best_left_sum = np.zeros((n_slots, pred_dim), dtype=np.float32)
             slot_best_right_sum = np.zeros((n_slots, pred_dim), dtype=np.float32)
 
-            if self.cpu_threads > 1:
-                evaluate_slot_bests_cpu_parallel(
-                    hist_count,
-                    hist_weight,
-                    hist_sum,
-                    self.tree_config.get("min_samples_leaf"),
-                    self.tree_config.get("reg_lambda"),
-                    slot_parent_count,
-                    slot_parent_weight,
-                    slot_parent_sum,
-                    slot_best_gain,
-                    slot_best_feature,
-                    slot_best_bin,
-                    slot_best_left_count,
-                    slot_best_right_count,
-                    slot_best_left_weight,
-                    slot_best_right_weight,
-                    slot_best_left_sum,
-                    slot_best_right_sum,
-                )
-            else:
-                evaluate_slot_bests_cpu(
-                    hist_count,
-                    hist_weight,
-                    hist_sum,
-                    self.tree_config.get("min_samples_leaf"),
-                    self.tree_config.get("reg_lambda"),
-                    slot_parent_count,
-                    slot_parent_weight,
-                    slot_parent_sum,
-                    slot_best_gain,
-                    slot_best_feature,
-                    slot_best_bin,
-                    slot_best_left_count,
-                    slot_best_right_count,
-                    slot_best_left_weight,
-                    slot_best_right_weight,
-                    slot_best_left_sum,
-                    slot_best_right_sum,
-                )
+            evaluate_slot_bests_cpu(
+                hist_count,
+                hist_weight,
+                hist_sum,
+                self.tree_config.get("min_samples_leaf"),
+                self.tree_config.get("reg_lambda"),
+                slot_parent_count,
+                slot_parent_weight,
+                slot_parent_sum,
+                slot_best_gain,
+                slot_best_feature,
+                slot_best_bin,
+                slot_best_left_count,
+                slot_best_right_count,
+                slot_best_left_weight,
+                slot_best_right_weight,
+                slot_best_left_sum,
+                slot_best_right_sum,
+            )
 
             if tree_profile is not None:
                 _update_profile(tree_profile)
@@ -790,9 +627,11 @@ class CpuSingleTreeTrainer:
             _finish_profile(tree_profile)
             print_profile(tree_profile)
         tree.finalize_prediction_state()
+        self._set_threads(self.cpu_threads)
         return tree
 
     def update_training_cache(self, training_cache: TrainingCache, tree: SingleTree, learning_rate: float, profile: bool, training_profile: dict | None, round_idx: int):
+        self._set_threads(self.cpu_threads)
         update_profile = _start_profile(f"cache_update_round_{round_idx + 1}") if profile else None
         for batch in training_cache:
             self.family.apply_update(batch.state, self.predict_tree_batch(tree, bins=batch.bins), learning_rate)
@@ -818,6 +657,7 @@ class CpuSingleTreeTrainer:
     def profile_fresh_inference(self, model: AdditiveEnsemble, profile: bool):
         if not profile:
             return
+        self._set_threads(self.cpu_threads)
         fresh_profile = _start_profile("fresh_inference")
         fresh_sum_prob = 0.0
         fresh_count = 0
