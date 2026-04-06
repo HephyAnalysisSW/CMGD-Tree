@@ -7,6 +7,7 @@ import time
 import numpy as np
 import xgboost as xgb
 
+from cpu_single_tree_trainer import CpuSingleTreeTrainer
 from families import family_from_configs
 from gpu_single_tree_trainer import GpuSingleTreeTrainer
 from providers.gaussian_class_toy import GaussianClassToyStream
@@ -28,6 +29,8 @@ COMPARE_CONFIG = {
     "min_split_loss": 1e-3,
     "learning_rate": 1.0,
     "n_boost_rounds": 100,
+    "training_backend": "gpu",
+    "cpu_threads": 1,
     "cpu_predictor": "leaf_mask",
     "xgb_n_jobs": 1,
     "xgb_multi_strategy": "multi_output_tree",
@@ -132,6 +135,8 @@ def build_our_model():
         "plot_bins": 80,
         "plot_mode": "all",
         "threads_per_block": 128,
+        "training_backend": COMPARE_CONFIG["training_backend"],
+        "cpu_threads": COMPARE_CONFIG["cpu_threads"],
         "predict_method": "cpu",
         "cpu_predictor": COMPARE_CONFIG["cpu_predictor"],
         "n_boost_rounds": COMPARE_CONFIG["n_boost_rounds"],
@@ -140,7 +145,10 @@ def build_our_model():
         "fresh_inference_n_batches": COMPARE_CONFIG["fresh_n_batches"],
     }
     family = family_from_configs(tree_config, dataset_config)
-    trainer = GpuSingleTreeTrainer(tree_config, dataset_config, training_config, family)
+    if training_config["training_backend"] == "gpu":
+        trainer = GpuSingleTreeTrainer(tree_config, dataset_config, training_config, family)
+    else:
+        trainer = CpuSingleTreeTrainer(tree_config, dataset_config, training_config, family)
     wall_start = time.perf_counter()
     cpu_start = time.process_time()
     model, _provider_kwargs, train_metric, _mean_sum_prob, _loss_history = trainer.run(profile=False)

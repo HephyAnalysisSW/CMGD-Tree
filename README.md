@@ -106,6 +106,8 @@ The defaults live near the top of [fit_single_tree_hist_demo.py](/home/rschoefbe
 - `plot_bins`
 - `plot_mode`
 - `threads_per_block`
+- `training_backend`
+- `cpu_threads`
 - `predict_method`
 - `cpu_predictor`
 - `n_boost_rounds`
@@ -148,6 +150,13 @@ CPU inference with the compiled multicore predictor:
 ```bash
 python fit_single_tree_hist_demo.py \
   --modify predict_method cpu cpu_predictor numba_parallel n_features 4
+```
+
+Explicit CPU training with a bounded thread override:
+
+```bash
+python fit_single_tree_hist_demo.py \
+  --modify training_backend cpu cpu_threads 8 predict_method cpu cpu_predictor numba_parallel n_features 4
 ```
 
 ## Families
@@ -230,7 +239,8 @@ Benchmark helpers live under [benchmarks/](/home/rschoefbeck/CMGD-Tree/benchmark
 Matched comparison against XGBoost:
 
 ```bash
-python -m benchmarks.compare_normal_single_core_inference --modify cpu_predictor numba
+python -m benchmarks.compare_normal_single_core_inference \
+  --modify training_backend gpu cpu_threads 1 cpu_predictor numba
 ```
 
 Standalone XGBoost baseline:
@@ -245,8 +255,34 @@ Depth-scaling sweep:
 bash benchmarks/run_depth_scaling_benchmarks.sh
 ```
 
+CPU thread-scaling sweep:
+
+```bash
+bash benchmarks/run_cpu_thread_scaling_benchmarks.sh
+```
+
+That sweep benchmarks CPU training and fresh CPU inference as a function of:
+
+- tree depth
+- total number of streamed events
+- `cpu_threads`
+
+and writes result files under:
+
+```bash
+~/logs/cpu_thread_scaling/results/
+```
+
+followed by plots under:
+
+```bash
+./plots/cpu_thread_scaling/
+```
+
 ## Notes
 
-- Training is GPU-only at the moment.
+- Training defaults to GPU when available and falls back to CPU otherwise.
+- CPU training exists as a separate histogram backend.
+- `cpu_threads` defaults to a conservative value of `1`; raise it explicitly when you want multicore CPU training.
 - Plotting is intentionally outside the main profiling target.
 - `TrainingCache` is in-memory now, but its shape is intended to make later storage changes possible.

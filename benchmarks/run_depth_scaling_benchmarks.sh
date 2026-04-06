@@ -11,6 +11,8 @@ N_BATCHES_LIST=(1 4 16 64 128)
 DEPTHS=(3 4 5 6)
 XGB_N_JOBS="${XGB_N_JOBS:--1}"
 CPU_PREDICTOR="${CPU_PREDICTOR:-numba_parallel}"
+TRAINING_BACKEND="${TRAINING_BACKEND:-gpu}"
+CPU_THREADS="${CPU_THREADS:-1}"
 
 for depth in "${DEPTHS[@]}"; do
   max_leaves=$((1 << depth))
@@ -30,6 +32,8 @@ for depth in "${DEPTHS[@]}"; do
       train_n_batches "${n_batches}"
       fresh_batch_size "${BATCH_SIZE}"
       fresh_n_batches "${n_batches}"
+      training_backend "${TRAINING_BACKEND}"
+      cpu_threads "${CPU_THREADS}"
       cpu_predictor "${CPU_PREDICTOR}"
       xgb_n_jobs "${XGB_N_JOBS}"
       --result-path "${result_file}"
