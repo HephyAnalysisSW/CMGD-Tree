@@ -161,6 +161,9 @@ def _resolve_training_backend(requested_backend: str) -> str:
 
 
 ARGS = _parse_args()
+MODIFIED_KEYS = set(ARGS.modify[0::2])
+if TREE_CONFIG.get("family") == "heteroskedastic_normal" and "learning_rate" not in MODIFIED_KEYS:
+    TRAINING_CONFIG["learning_rate"] = 0.2
 RESOLVED_TRAINING_BACKEND = _resolve_training_backend(TRAINING_CONFIG.get("training_backend"))
 TRAINING_CONFIG["training_backend"] = RESOLVED_TRAINING_BACKEND
 if TRAINING_CONFIG.get("cpu_threads", 0) <= 0:

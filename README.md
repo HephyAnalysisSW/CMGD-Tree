@@ -168,6 +168,17 @@ python fit_single_tree_hist_demo.py \
   --modify training_backend cpu cpu_threads 8 predict_method cpu n_features 4
 ```
 
+The global default learning rate is `1.0`.
+
+For `heteroskedastic_normal`, the demo automatically uses `learning_rate=0.2` unless you override it explicitly.
+
+Examples:
+
+```bash
+python fit_single_tree_hist_demo.py --modify family heteroskedastic_normal n_classes 2
+python fit_single_tree_hist_demo.py --modify family heteroskedastic_normal n_classes 2 learning_rate 1.0
+```
+
 ## Families
 
 Implemented family names:
