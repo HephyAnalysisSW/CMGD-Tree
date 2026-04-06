@@ -1,0 +1,33 @@
+name: Build Writeup
+
+on:
+  push:
+    paths:
+      - "writeup.tex"
+      - ".github/workflows/build-writeup.yml"
+  pull_request:
+    paths:
+      - "writeup.tex"
+      - ".github/workflows/build-writeup.yml"
+  workflow_dispatch:
+
+jobs:
+  build-writeup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Compile writeup
+        uses: xu-cheng/latex-action@v3
+        with:
+          root_file: writeup.tex
+          args: -pdf -file-line-error -halt-on-error -interaction=nonstopmode
+
+      - name: Upload PDF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: writeup-pdf
+          path: writeup.pdf
+          if-no-files-found: error
