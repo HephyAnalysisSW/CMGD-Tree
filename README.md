@@ -153,6 +153,14 @@ python fit_single_tree_hist_demo.py \
   --modify family gamma
 ```
 
+Negative binomial MGD toy run with plots:
+
+```bash
+python fit_single_tree_hist_demo.py \
+  --plot \
+  --modify family negative_binomial
+```
+
 Scalar heteroskedastic normal toy run with plots:
 
 ```bash
@@ -215,6 +223,22 @@ python fit_single_tree_hist_demo.py --modify family gamma
 python fit_single_tree_hist_demo.py --modify family gamma n_features 8 n_classes 4
 ```
 
+The current `negative_binomial` example uses:
+
+- `n_features=4`
+- `n_classes=4`
+- `max_depth=3`
+- `max_leaves=8`
+- `n_boost_rounds=10`
+- `learning_rate=0.2`
+
+Examples:
+
+```bash
+python fit_single_tree_hist_demo.py --modify family negative_binomial
+python fit_single_tree_hist_demo.py --modify family negative_binomial n_features 8 n_classes 4
+```
+
 ## Families
 
 Implemented family names:
@@ -224,6 +248,8 @@ Implemented family names:
 - `heteroskedastic_normal_ngd`
 - `gamma`
 - `gamma_mgd`
+- `negative_binomial`
+- `negative_binomial_mgd`
 - `poisson`
 - `poisson_mgd`
 - `poisson_ngd`
@@ -235,6 +261,7 @@ python fit_single_tree_hist_demo.py --modify family normal_identity
 python fit_single_tree_hist_demo.py --modify family heteroskedastic_normal
 python fit_single_tree_hist_demo.py --modify family heteroskedastic_normal_ngd
 python fit_single_tree_hist_demo.py --modify family gamma
+python fit_single_tree_hist_demo.py --modify family negative_binomial
 python fit_single_tree_hist_demo.py --modify family poisson
 python fit_single_tree_hist_demo.py --modify family poisson_ngd
 ```
@@ -294,6 +321,9 @@ Examples:
   - feature-density plots
   - feature-target 2D mean-overlay plots
 - `gamma`
+  - feature-density plots
+  - feature-target 2D mean-overlay plots
+- `negative_binomial`
   - feature-density plots
   - feature-target 2D mean-overlay plots
 - `poisson`
