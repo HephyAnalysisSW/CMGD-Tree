@@ -31,7 +31,7 @@ COMPARE_CONFIG = {
     "n_boost_rounds": 100,
     "training_backend": "gpu",
     "cpu_threads": 1,
-    "cpu_predictor": "leaf_mask",
+    "cpu_predictor": "numba",
     "xgb_n_jobs": 1,
     "xgb_multi_strategy": "multi_output_tree",
 }

@@ -149,14 +149,14 @@ CPU inference with the compiled multicore predictor:
 
 ```bash
 python fit_single_tree_hist_demo.py \
-  --modify predict_method cpu cpu_predictor numba_parallel n_features 4
+  --modify predict_method cpu n_features 4
 ```
 
 Explicit CPU training with a bounded thread override:
 
 ```bash
 python fit_single_tree_hist_demo.py \
-  --modify training_backend cpu cpu_threads 8 predict_method cpu cpu_predictor numba_parallel n_features 4
+  --modify training_backend cpu cpu_threads 8 predict_method cpu n_features 4
 ```
 
 ## Families
@@ -202,11 +202,13 @@ CPU predictor choices:
 - `numba`
 - `numba_parallel`
 
+The default CPU predictor is `numba_parallel`.
+
 Example:
 
 ```bash
 python fit_single_tree_hist_demo.py \
-  --modify predict_method cpu cpu_predictor numba_parallel n_features 4
+  --modify predict_method cpu n_features 4
 ```
 
 ## Plotting
@@ -240,7 +242,7 @@ Matched comparison against XGBoost:
 
 ```bash
 python -m benchmarks.compare_normal_single_core_inference \
-  --modify training_backend gpu cpu_threads 1 cpu_predictor numba
+  --modify training_backend gpu cpu_threads 1
 ```
 
 Standalone XGBoost baseline:
@@ -279,10 +281,32 @@ followed by plots under:
 ./plots/cpu_thread_scaling/
 ```
 
+Fixed-`N` CPU thread sweep with thread count on the x-axis:
+
+```bash
+bash benchmarks/run_cpu_threads_fixed_n.sh
+```
+
+That sweep writes result files under:
+
+```bash
+~/logs/cpu_threads_fixed_n/results/
+```
+
+and plots under:
+
+```bash
+./plots/cpu_threads_fixed_n/
+```
+
 ## Notes
 
 - Training defaults to GPU when available and falls back to CPU otherwise.
 - CPU training exists as a separate histogram backend.
-- `cpu_threads` defaults to a conservative value of `1`; raise it explicitly when you want multicore CPU training.
+- `cpu_threads` defaults to a conservative value of `1`.
+- CPU tree fitting is intentionally single-threaded now because the threaded fit path was slower in benchmarks.
+- `cpu_threads` mainly affects CPU cache updates and CPU fresh inference, where threading does help.
+- `cpu_predictor` defaults to `numba_parallel`, which is the current best CPU inference path.
+- The single-core XGBoost comparison benchmark defaults to `cpu_predictor=numba`.
 - Plotting is intentionally outside the main profiling target.
 - `TrainingCache` is in-memory now, but its shape is intended to make later storage changes possible.

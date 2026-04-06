@@ -43,7 +43,7 @@ TRAINING_CONFIG = {
     "training_backend": "auto",
     "cpu_threads": 0,
     "predict_method": "cpu",
-    "cpu_predictor": "index",
+    "cpu_predictor": "numba_parallel",
     "n_boost_rounds": 2,
     "learning_rate": 1.0,
     "fresh_inference_batch_size": None,
