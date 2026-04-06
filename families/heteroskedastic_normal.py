@@ -24,14 +24,16 @@ class HeteroskedasticNormalFamily(BoostingFamily):
     def example_defaults(cls) -> dict[str, dict]:
         return {
             "tree": {
-                "max_depth": 3,
-                "max_leaves": 8,
+                "max_depth": 2,
+                "max_leaves": 4,
             },
             "dataset": {
-                "n_features": 4,
+                "n_features": 2,
                 "n_classes": 2,
+                "n_batches": 24,
             },
             "training": {
+                "n_boost_rounds": 10,
                 "learning_rate": 0.2,
             },
         }
@@ -62,11 +64,12 @@ class HeteroskedasticNormalFamily(BoostingFamily):
 
     def project_state(self, state_cpu: np.ndarray) -> np.ndarray:
         projected = state_cpu.copy()
-        mu = projected[:, 0] if projected.ndim == 2 else projected[0:1]
         if projected.ndim == 2:
+            mu = projected[:, 0]
             projected[:, 1] = np.maximum(projected[:, 1], mu * mu + self.min_variance)
         else:
-            projected[1] = max(projected[1], float(mu[0] * mu[0] + self.min_variance))
+            mu = projected[0]
+            projected[1] = max(projected[1], float(mu * mu + self.min_variance))
         return projected
 
     def monitoring_loss(

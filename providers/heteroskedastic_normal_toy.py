@@ -35,24 +35,21 @@ class HeteroskedasticNormalToyStream(PlotConfigProvider):
             size=(self.batch_size, self.n_features),
         ).astype(self.dtype)
         if self.n_features > 0:
-            x[:, 0] += self.feature_offset_scale / 4.0
+            x[:, 0] += self.feature_offset_scale / 6.0
+        if self.n_features > 1:
+            x[:, 1] -= self.feature_offset_scale / 8.0
 
         mu = np.zeros((self.batch_size,), dtype=np.float32)
         if self.n_features > 0:
-            mu += 1.25 * x[:, 0]
-        if self.n_features > 1:
-            mu += -0.75 * x[:, 1]
+            mu += np.where(x[:, 0] <= 0.0, -1.5, 1.5).astype(np.float32)
         if self.n_features > 2:
-            mu += 0.6 * (x[:, 2] > 0.0).astype(np.float32)
-        if self.n_features > 3:
-            mu += -0.4 * (x[:, 3] < 0.0).astype(np.float32)
+            mu += 0.2 * (x[:, 2] > 0.0).astype(np.float32)
 
-        log_var = np.full((self.batch_size,), -0.35, dtype=np.float32)
-        if self.n_features > 2:
-            log_var += 0.7 * x[:, 2]
+        var = np.full((self.batch_size,), 0.25, dtype=np.float32)
+        if self.n_features > 1:
+            var = np.where(x[:, 1] <= 0.0, 0.25, 2.25).astype(np.float32)
         if self.n_features > 3:
-            log_var += 0.35 * np.abs(x[:, 3])
-        var = np.exp(np.clip(log_var, -4.0, 3.0)).astype(np.float32, copy=False)
+            var += 0.1 * (x[:, 3] > 0.0).astype(np.float32)
         y = (mu + np.sqrt(var).astype(np.float32, copy=False) * self._rng.normal(size=self.batch_size)).astype(np.float32)
         target_stats = np.stack((y, y * y), axis=1).astype(np.float32, copy=False)
         return StreamBatch(x=x, target_stats=target_stats)
