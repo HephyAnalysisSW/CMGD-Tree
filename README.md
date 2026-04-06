@@ -145,6 +145,15 @@ python fit_single_tree_hist_demo.py \
   --modify family poisson_ngd n_features 4 n_classes 4 max_depth 3 max_leaves 8
 ```
 
+Scalar heteroskedastic normal toy run with plots:
+
+```bash
+python fit_single_tree_hist_demo.py \
+  --print-trees \
+  --plot \
+  --modify family heteroskedastic_normal n_features 4 n_classes 2 max_depth 3 max_leaves 8
+```
+
 CPU inference with the compiled multicore predictor:
 
 ```bash
@@ -164,6 +173,7 @@ python fit_single_tree_hist_demo.py \
 Implemented family names:
 
 - `normal_identity`
+- `heteroskedastic_normal`
 - `poisson`
 - `poisson_mgd`
 - `poisson_ngd`
@@ -172,6 +182,7 @@ Select one with:
 
 ```bash
 python fit_single_tree_hist_demo.py --modify family normal_identity
+python fit_single_tree_hist_demo.py --modify family heteroskedastic_normal n_classes 2
 python fit_single_tree_hist_demo.py --modify family poisson
 python fit_single_tree_hist_demo.py --modify family poisson_ngd
 ```
@@ -183,9 +194,9 @@ Current division of responsibility:
   - target statistics
   - update rule hooks
   - monitoring loss
-  - plotting defaults
 - [providers/](/home/rschoefbeck/CMGD-Tree/providers) defines:
   - streamed toy data generation
+  - use-case-specific plotting recipes
   - the batch payload consumed by the trainer
 
 ## Prediction Modes
@@ -223,8 +234,19 @@ When `--plot` is enabled, the demo writes diagnostic plots to:
 
 The current default `plot_mode` is `all`, which means:
 
-- feature-density plots
-- feature-target 2D mean-overlay plots
+- the provider-specific default plot set for the selected toy example
+
+Examples:
+
+- `normal_identity`
+  - feature-density plots
+  - feature-target 2D mean-overlay plots
+- `poisson`
+  - feature-density plots
+  - feature-target 2D mean-overlay plots
+- `heteroskedastic_normal`
+  - x-vs-y density with observed/predicted mean overlay
+  - observed/predicted conditional variance overlay
 
 For small exploratory runs, it is often useful to reduce the toy dimensions:
 

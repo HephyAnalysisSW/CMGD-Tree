@@ -64,24 +64,6 @@ class PoissonMGDFamily(BoostingFamily):
             return float(np.sum(per_row)), float(state_cpu.shape[0])
         return float(np.sum(sample_weight * per_row)), float(np.sum(sample_weight))
 
-    def plot_config(self, n_features: int, plot_mode: str = "auto") -> dict:
-        pairs = [
-            (feature_idx, target_idx)
-            for feature_idx in range(n_features)
-            for target_idx in range(self.prediction_dim)
-        ]
-        if plot_mode == "auto":
-            plot_mode = "all"
-        if plot_mode == "all":
-            return {
-                "modes": [
-                    {"mode": "feature_target_mean", "pairs": pairs},
-                    {"mode": "class_density", "feature_indices": list(range(n_features))},
-                ]
-            }
-        return {"mode": "feature_target_mean", "pairs": pairs}
-
-
 @dataclass
 class PoissonNGDFamily(PoissonMGDFamily):
     name: str = "poisson_ngd"

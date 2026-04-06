@@ -844,7 +844,7 @@ class GpuSingleTreeTrainer:
             _update_profile(fresh_profile)
         _finish_profile(fresh_profile)
         print_profile(fresh_profile)
-        print(f"Fresh inference mean sum of class predictions: {fresh_sum_prob / max(fresh_count, 1):.6f}")
+        print(f"Fresh inference mean sum of predictions: {fresh_sum_prob / max(fresh_count, 1):.6f}")
 
     def run(self, profile: bool) -> tuple[AdditiveEnsemble, dict, float, float, list[float]]:
         provider_kwargs = self.provider_kwargs()

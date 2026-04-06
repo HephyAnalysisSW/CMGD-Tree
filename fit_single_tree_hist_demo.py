@@ -129,8 +129,8 @@ def _parse_args():
 
     if TREE_CONFIG.get("grow_policy") not in {"depthwise", "lossguide"}:
         raise ValueError("grow_policy must be 'depthwise' or 'lossguide'.")
-    if TREE_CONFIG.get("family") not in {"normal_identity", "poisson", "poisson_mgd", "poisson_ngd"}:
-        raise ValueError("family must be 'normal_identity', 'poisson', 'poisson_mgd', or 'poisson_ngd'.")
+    if TREE_CONFIG.get("family") not in {"normal_identity", "heteroskedastic_normal", "poisson", "poisson_mgd", "poisson_ngd"}:
+        raise ValueError("family must be 'normal_identity', 'heteroskedastic_normal', 'poisson', 'poisson_mgd', or 'poisson_ngd'.")
     if TRAINING_CONFIG.get("training_backend") not in {"auto", "gpu", "cpu"}:
         raise ValueError("training_backend must be 'auto', 'gpu', or 'cpu'.")
     if TRAINING_CONFIG.get("predict_method") not in {"cpu", "gpu"}:
@@ -195,7 +195,7 @@ def main():
     print(f"Objective: {FAMILY.name}")
     print(f"Initial train {FAMILY.monitor_name}: {loss_history[0]:.6f}")
     print(f"Final streamed train {FAMILY.monitor_name}: {train_metric:.6f}")
-    print(f"Mean sum of class predictions: {mean_sum_prob:.6f}")
+    print(f"Mean sum of predictions: {mean_sum_prob:.6f}")
     print(f"Prediction method: {TRAINING_CONFIG.get('predict_method')}")
     if TRAINING_CONFIG.get("predict_method") == "cpu":
         print(f"CPU predictor: {TRAINING_CONFIG.get('cpu_predictor')}")
@@ -223,10 +223,7 @@ if __name__ == "__main__":
                 cpu_predictor=TRAINING_CONFIG.get("cpu_predictor"),
             ),
             n_classes=DATASET_CONFIG.get("n_classes"),
-            plot_config=FAMILY.plot_config(
-                n_features=DATASET_CONFIG.get("n_features"),
-                plot_mode=TRAINING_CONFIG.get("plot_mode"),
-            ),
+            plot_mode=TRAINING_CONFIG.get("plot_mode"),
             n_bins=TRAINING_CONFIG.get("plot_bins"),
         )
         print()

@@ -80,9 +80,6 @@ class BoostingFamily:
         """Return summed monitoring loss and its normalization weight."""
         raise NotImplementedError
 
-    def plot_config(self, n_features: int, plot_mode: str = "auto") -> dict:
-        """Return plotting configuration for the demo diagnostics."""
-        raise NotImplementedError
 
 
 def class_weight_vector(tree_config: dict, dim: int) -> tuple[np.ndarray | None, bool]:
