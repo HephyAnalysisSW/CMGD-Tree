@@ -3,8 +3,8 @@ from __future__ import annotations
 import argparse
 import ast
 
+from families import family_from_configs
 from gpu_single_tree_trainer import GpuSingleTreeTrainer
-from normal_identity_family import family_from_configs
 from plot_feature_ratios import make_family_diagnostic_plots
 
 
@@ -113,8 +113,8 @@ def _parse_args():
 
     if TREE_CONFIG.get("grow_policy") not in {"depthwise", "lossguide"}:
         raise ValueError("grow_policy must be 'depthwise' or 'lossguide'.")
-    if TREE_CONFIG.get("family") not in {"normal_identity", "poisson"}:
-        raise ValueError("family must be 'normal_identity' or 'poisson'.")
+    if TREE_CONFIG.get("family") not in {"normal_identity", "poisson", "poisson_mgd", "poisson_ngd"}:
+        raise ValueError("family must be 'normal_identity', 'poisson', 'poisson_mgd', or 'poisson_ngd'.")
     if TRAINING_CONFIG.get("predict_method") not in {"cpu", "gpu"}:
         raise ValueError("predict_method must be 'cpu' or 'gpu'.")
     if TRAINING_CONFIG.get("cpu_predictor") not in {"index", "leaf_mask", "numba", "numba_parallel"}:

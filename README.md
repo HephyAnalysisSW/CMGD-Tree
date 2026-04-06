@@ -9,7 +9,9 @@ The current code fits vector-valued regression trees to streamed target statisti
 - [fit_single_tree_hist_demo.py](/home/rschoefbeck/CMGD-Tree/fit_single_tree_hist_demo.py): main demo and benchmark entrypoint
 - [gpu_single_tree_trainer.py](/home/rschoefbeck/CMGD-Tree/gpu_single_tree_trainer.py): GPU training backend and in-memory `TrainingCache`
 - [single_tree.py](/home/rschoefbeck/CMGD-Tree/single_tree.py): `SingleTree`, `AdditiveEnsemble`, CPU predictors
-- [normal_identity_family.py](/home/rschoefbeck/CMGD-Tree/normal_identity_family.py): user-facing family definitions and toy data streams
+- [families/](/home/rschoefbeck/CMGD-Tree/families): family definitions and update hooks
+- [providers/](/home/rschoefbeck/CMGD-Tree/providers): toy streamed data providers
+- [normal_identity_family.py](/home/rschoefbeck/CMGD-Tree/normal_identity_family.py): compatibility shim for older imports
 - [plot_feature_ratios.py](/home/rschoefbeck/CMGD-Tree/plot_feature_ratios.py): diagnostic plotting
 - [compare_normal_single_core_inference.py](/home/rschoefbeck/CMGD-Tree/compare_normal_single_core_inference.py): matched comparison against XGBoost
 - [xgboost_normal_compare.py](/home/rschoefbeck/CMGD-Tree/xgboost_normal_compare.py): standalone XGBoost baseline
@@ -78,6 +80,7 @@ Select the family with:
 ```bash
 python fit_single_tree_hist_demo.py --modify family normal_identity
 python fit_single_tree_hist_demo.py --modify family poisson
+python fit_single_tree_hist_demo.py --modify family poisson_ngd
 ```
 
 Currently implemented:
@@ -88,8 +91,12 @@ Currently implemented:
 - `poisson`
   - target statistics are vector Poisson counts
   - monitor metric is Poisson NLL
+- `poisson_ngd`
+  - target statistics are vector Poisson counts
+  - monitor metric is Poisson NLL
+  - tree targets are Fisher-preconditioned pseudo-responses
 
-Family-specific code lives in [normal_identity_family.py](/home/rschoefbeck/CMGD-Tree/normal_identity_family.py). That file is the intended user-facing place for:
+Family-specific code now lives under [families/](/home/rschoefbeck/CMGD-Tree/families), while toy streams live under [providers/](/home/rschoefbeck/CMGD-Tree/providers). Together they are the intended user-facing place for:
 
 - toy stream generation
 - target statistics `T(y)`

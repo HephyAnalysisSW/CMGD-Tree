@@ -7,8 +7,9 @@ import time
 import numpy as np
 import xgboost as xgb
 
+from families import family_from_configs
 from gpu_single_tree_trainer import GpuSingleTreeTrainer
-from normal_identity_family import GaussianClassToyStream, family_from_configs
+from providers.gaussian_class_toy import GaussianClassToyStream
 
 
 COMPARE_CONFIG = {
