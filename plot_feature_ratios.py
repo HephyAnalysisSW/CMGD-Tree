@@ -151,6 +151,9 @@ def _plot_heteroskedastic_normal_scalar(
     y = target_stats_all[:, 0]
     pred_mu = pred_all[:, 0]
     pred_var = np.maximum(pred_all[:, 1] - pred_all[:, 0] * pred_all[:, 0], 1.0e-6)
+    summary_lines = [
+        "feature valid_bins mean_rmse mean_mae var_rmse var_mae",
+    ]
 
     for feature_idx in feature_indices:
         fig, (ax_mean, ax_var) = plt.subplots(2, 1, figsize=(7, 8), sharex=True)
@@ -202,6 +205,22 @@ def _plot_heteroskedastic_normal_scalar(
         fig.tight_layout()
         fig.savefig(out_dir / f"feature{feature_idx}_heteroskedastic.png", dpi=150)
         plt.close(fig)
+
+        valid = np.isfinite(mean_obs) & np.isfinite(mean_pred) & np.isfinite(var_obs) & np.isfinite(var_pred)
+        if np.any(valid):
+            mean_diff = mean_pred[valid] - mean_obs[valid]
+            var_diff = var_pred[valid] - var_obs[valid]
+            summary_lines.append(
+                f"{feature_idx} {int(np.sum(valid))} "
+                f"{float(np.sqrt(np.mean(mean_diff * mean_diff))):.6f} "
+                f"{float(np.mean(np.abs(mean_diff))):.6f} "
+                f"{float(np.sqrt(np.mean(var_diff * var_diff))):.6f} "
+                f"{float(np.mean(np.abs(var_diff))):.6f}"
+            )
+        else:
+            summary_lines.append(f"{feature_idx} 0 nan nan nan nan")
+
+    (out_dir / "heteroskedastic_summary.txt").write_text("\n".join(summary_lines) + "\n")
 
 
 def make_family_diagnostic_plots(
