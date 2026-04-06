@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from families.base import BoostingFamily
+from families.gamma import GammaMGDFamily
 from families.heteroskedastic_normal import HeteroskedasticNormalFamily, HeteroskedasticNormalNGDFamily
 from families.normal_identity import NormalIdentityFamily
 from families.poisson import PoissonMGDFamily, PoissonNGDFamily
@@ -13,11 +14,13 @@ def family_class_from_name(family_name: str) -> type[BoostingFamily]:
         return HeteroskedasticNormalFamily
     if family_name == "heteroskedastic_normal_ngd":
         return HeteroskedasticNormalNGDFamily
+    if family_name in {"gamma", "gamma_mgd"}:
+        return GammaMGDFamily
     if family_name in {"poisson", "poisson_mgd"}:
         return PoissonMGDFamily
     if family_name == "poisson_ngd":
         return PoissonNGDFamily
-    raise ValueError("family must be 'normal_identity', 'heteroskedastic_normal', 'heteroskedastic_normal_ngd', 'poisson', 'poisson_mgd', or 'poisson_ngd'.")
+    raise ValueError("family must be 'normal_identity', 'heteroskedastic_normal', 'heteroskedastic_normal_ngd', 'gamma', 'gamma_mgd', 'poisson', 'poisson_mgd', or 'poisson_ngd'.")
 
 
 def family_from_configs(tree_config: dict, dataset_config: dict) -> BoostingFamily:

@@ -145,6 +145,14 @@ python fit_single_tree_hist_demo.py \
   --modify family poisson_ngd n_features 4 n_classes 4 max_depth 3 max_leaves 8
 ```
 
+Gamma MGD toy run with plots:
+
+```bash
+python fit_single_tree_hist_demo.py \
+  --plot \
+  --modify family gamma
+```
+
 Scalar heteroskedastic normal toy run with plots:
 
 ```bash
@@ -176,10 +184,12 @@ CLI. They are applied only for keys you did not override explicitly.
 
 The current `heteroskedastic_normal` example uses:
 
-- `n_features=4`
+- `n_features=2`
 - `n_classes=2`
-- `max_depth=3`
-- `max_leaves=8`
+- `n_batches=24`
+- `max_depth=2`
+- `max_leaves=4`
+- `n_boost_rounds=10`
 - `learning_rate=0.2`
 
 Examples:
@@ -189,6 +199,22 @@ python fit_single_tree_hist_demo.py --modify family heteroskedastic_normal
 python fit_single_tree_hist_demo.py --modify family heteroskedastic_normal learning_rate 1.0
 ```
 
+The current `gamma` example uses:
+
+- `n_features=4`
+- `n_classes=4`
+- `max_depth=3`
+- `max_leaves=8`
+- `n_boost_rounds=10`
+- `learning_rate=0.2`
+
+Examples:
+
+```bash
+python fit_single_tree_hist_demo.py --modify family gamma
+python fit_single_tree_hist_demo.py --modify family gamma n_features 8 n_classes 4
+```
+
 ## Families
 
 Implemented family names:
@@ -196,6 +222,8 @@ Implemented family names:
 - `normal_identity`
 - `heteroskedastic_normal`
 - `heteroskedastic_normal_ngd`
+- `gamma`
+- `gamma_mgd`
 - `poisson`
 - `poisson_mgd`
 - `poisson_ngd`
@@ -206,6 +234,7 @@ Select one with:
 python fit_single_tree_hist_demo.py --modify family normal_identity
 python fit_single_tree_hist_demo.py --modify family heteroskedastic_normal
 python fit_single_tree_hist_demo.py --modify family heteroskedastic_normal_ngd
+python fit_single_tree_hist_demo.py --modify family gamma
 python fit_single_tree_hist_demo.py --modify family poisson
 python fit_single_tree_hist_demo.py --modify family poisson_ngd
 ```
@@ -262,6 +291,9 @@ The current default `plot_mode` is `all`, which means:
 Examples:
 
 - `normal_identity`
+  - feature-density plots
+  - feature-target 2D mean-overlay plots
+- `gamma`
   - feature-density plots
   - feature-target 2D mean-overlay plots
 - `poisson`

@@ -129,8 +129,8 @@ def _parse_args():
 
     if TREE_CONFIG.get("grow_policy") not in {"depthwise", "lossguide"}:
         raise ValueError("grow_policy must be 'depthwise' or 'lossguide'.")
-    if TREE_CONFIG.get("family") not in {"normal_identity", "heteroskedastic_normal", "heteroskedastic_normal_ngd", "poisson", "poisson_mgd", "poisson_ngd"}:
-        raise ValueError("family must be 'normal_identity', 'heteroskedastic_normal', 'heteroskedastic_normal_ngd', 'poisson', 'poisson_mgd', or 'poisson_ngd'.")
+    if TREE_CONFIG.get("family") not in {"normal_identity", "heteroskedastic_normal", "heteroskedastic_normal_ngd", "gamma", "gamma_mgd", "poisson", "poisson_mgd", "poisson_ngd"}:
+        raise ValueError("family must be 'normal_identity', 'heteroskedastic_normal', 'heteroskedastic_normal_ngd', 'gamma', 'gamma_mgd', 'poisson', 'poisson_mgd', or 'poisson_ngd'.")
     if TRAINING_CONFIG.get("training_backend") not in {"auto", "gpu", "cpu"}:
         raise ValueError("training_backend must be 'auto', 'gpu', or 'cpu'.")
     if TRAINING_CONFIG.get("predict_method") not in {"cpu", "gpu"}:
