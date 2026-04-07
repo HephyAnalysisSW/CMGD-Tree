@@ -6,10 +6,11 @@ import os
 
 from numba import set_num_threads
 
-from cpu_single_tree_trainer import CpuSingleTreeTrainer
+from core.cpu_single_tree_trainer import CpuSingleTreeTrainer
+from core.gpu_single_tree_trainer import GpuSingleTreeTrainer
+from core.plot_feature_ratios import make_family_diagnostic_plots
+from examples import example_from_family_name
 from families import family_class_from_name, family_from_configs
-from gpu_single_tree_trainer import GpuSingleTreeTrainer
-from plot_feature_ratios import make_family_diagnostic_plots
 
 
 TREE_CONFIG = {
@@ -161,12 +162,16 @@ def _resolve_training_backend(requested_backend: str) -> str:
 
 
 def _apply_example_defaults(modified_keys: set[str]) -> None:
-    family_cls = family_class_from_name(TREE_CONFIG.get("family", "normal_identity"))
-    for group_name, overrides in family_cls.example_defaults().items():
-        group = CONFIG_GROUPS[group_name]
-        for key, value in overrides.items():
-            if key not in modified_keys:
-                group[key] = value
+    example = example_from_family_name(TREE_CONFIG.get("family", "normal_identity"))
+    for key, value in example.tree_defaults.items():
+        if key not in modified_keys:
+            TREE_CONFIG[key] = value
+    for key, value in example.dataset_defaults.items():
+        if key not in modified_keys:
+            DATASET_CONFIG[key] = value
+    for key, value in example.training_defaults.items():
+        if key not in modified_keys:
+            TRAINING_CONFIG[key] = value
 
 
 ARGS = _parse_args()

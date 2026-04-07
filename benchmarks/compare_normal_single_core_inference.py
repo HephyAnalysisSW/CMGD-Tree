@@ -7,10 +7,10 @@ import time
 import numpy as np
 import xgboost as xgb
 
-from cpu_single_tree_trainer import CpuSingleTreeTrainer
+from core.cpu_single_tree_trainer import CpuSingleTreeTrainer
+from core.gpu_single_tree_trainer import GpuSingleTreeTrainer
+from data_providers.gaussian_class_toy import GaussianClassToyStream
 from families import family_from_configs
-from gpu_single_tree_trainer import GpuSingleTreeTrainer
-from providers.gaussian_class_toy import GaussianClassToyStream
 
 
 COMPARE_CONFIG = {

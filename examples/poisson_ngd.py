@@ -1,0 +1,9 @@
+from examples.base import ExampleSpec
+
+
+EXAMPLE = ExampleSpec(
+    family_name="poisson_ngd",
+    tree_defaults={},
+    dataset_defaults={},
+    training_defaults={},
+)

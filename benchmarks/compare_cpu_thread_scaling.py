@@ -6,7 +6,7 @@ import time
 
 from numba import set_num_threads
 
-from cpu_single_tree_trainer import CpuSingleTreeTrainer
+from core.cpu_single_tree_trainer import CpuSingleTreeTrainer
 from families import family_from_configs
 
 

@@ -6,8 +6,8 @@ from typing import Iterator
 import numpy as np
 
 from families.base import BoostingFamily
-from providers.base import StreamBatch
-from providers.heteroskedastic_normal_toy import HeteroskedasticNormalToyStream
+from data_providers.base import StreamBatch
+from data_providers.heteroskedastic_normal_toy import HeteroskedasticNormalToyStream
 
 
 @dataclass
@@ -19,24 +19,6 @@ class HeteroskedasticNormalFamily(BoostingFamily):
     monitor_name: str = "Gaussian NLL"
     provider_class = HeteroskedasticNormalToyStream
     min_variance: float = 0.1
-
-    @classmethod
-    def example_defaults(cls) -> dict[str, dict]:
-        return {
-            "tree": {
-                "max_depth": 2,
-                "max_leaves": 4,
-            },
-            "dataset": {
-                "n_features": 2,
-                "n_classes": 2,
-                "n_batches": 24,
-            },
-            "training": {
-                "n_boost_rounds": 50,
-                "learning_rate": 0.2,
-            },
-        }
 
     @classmethod
     def from_configs(cls, tree_config: dict, dataset_config: dict) -> "HeteroskedasticNormalFamily":

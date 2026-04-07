@@ -6,8 +6,8 @@ from typing import Iterator
 import numpy as np
 
 from families.base import BoostingFamily, class_weight_vector
-from providers.base import StreamBatch
-from providers.gaussian_class_toy import GaussianClassToyStream
+from data_providers.base import StreamBatch
+from data_providers.gaussian_class_toy import GaussianClassToyStream
 
 
 @dataclass

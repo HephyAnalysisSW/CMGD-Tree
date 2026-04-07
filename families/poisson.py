@@ -8,8 +8,8 @@ from typing import Iterator
 import numpy as np
 
 from families.base import BoostingFamily, class_weight_vector
-from providers.base import StreamBatch
-from providers.poisson_toy import PoissonToyStream
+from data_providers.base import StreamBatch
+from data_providers.poisson_toy import PoissonToyStream
 
 
 @dataclass
@@ -21,11 +21,6 @@ class PoissonMGDFamily(BoostingFamily):
     monitor_name: str = "Poisson NLL"
     provider_class = PoissonToyStream
     clip_epsilon: float = 1.0e-6
-
-    @classmethod
-    def from_configs(cls, tree_config: dict, dataset_config: dict) -> "PoissonMGDFamily":
-        class_weights, use_weights = class_weight_vector(tree_config, dataset_config.get("n_classes"))
-        return cls(prediction_dim=dataset_config.get("n_classes"), class_weights=class_weights, use_weights=use_weights)
 
     def provider_kwargs(self, dataset_config: dict) -> dict:
         return {

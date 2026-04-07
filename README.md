@@ -137,6 +137,29 @@ python fit_single_tree_hist_demo.py \
   --modify family heteroskedastic_normal_ngd
 ```
 
+## How To Add A New Problem
+
+The code is now organized in three user-facing directories:
+
+- [families/](/home/rschoefbeck/CMGD-Tree/families)
+  Put the statistical model here.
+  A family defines target statistics, model state, updates, and monitoring loss.
+
+- [data_providers/](/home/rschoefbeck/CMGD-Tree/data_providers)
+  Put the data source here.
+  Today these are toy generators.
+  Later this is also the right place for a real streamed data loader.
+
+- [examples/](/home/rschoefbeck/CMGD-Tree/examples)
+  Put example-specific defaults here.
+  An example ties together a family choice and the default tree, dataset, and training settings you want to start from.
+
+So the intended pattern is:
+
+- new probabilistic model: add a file in `families/`
+- new toy generator or real loader: add a file in `data_providers/`
+- new runnable configuration: add a file in `examples/`
+
 ## Command-Line Options
 
 Top-level flags:

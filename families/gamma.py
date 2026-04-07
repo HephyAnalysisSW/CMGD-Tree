@@ -7,8 +7,8 @@ from typing import Iterator
 import numpy as np
 
 from families.base import BoostingFamily, class_weight_vector
-from providers.base import StreamBatch
-from providers.gamma_toy import GammaToyStream
+from data_providers.base import StreamBatch
+from data_providers.gamma_toy import GammaToyStream
 
 
 @dataclass
@@ -21,23 +21,6 @@ class GammaMGDFamily(BoostingFamily):
     provider_class = GammaToyStream
     clip_epsilon: float = 1.0e-6
     shape: float = 3.0
-
-    @classmethod
-    def example_defaults(cls) -> dict[str, dict]:
-        return {
-            "tree": {
-                "max_depth": 3,
-                "max_leaves": 8,
-            },
-            "dataset": {
-                "n_features": 4,
-                "n_classes": 4,
-            },
-            "training": {
-                "n_boost_rounds": 50,
-                "learning_rate": 0.2,
-            },
-        }
 
     @classmethod
     def from_configs(cls, tree_config: dict, dataset_config: dict) -> "GammaMGDFamily":
