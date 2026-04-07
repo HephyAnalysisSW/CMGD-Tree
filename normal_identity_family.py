@@ -6,9 +6,9 @@ from families import family_from_configs
 from families.base import BoostingFamily
 from families.normal_identity import NormalIdentityFamily
 from families.poisson import PoissonMGDFamily, PoissonNGDFamily
-from providers.base import StreamBatch
-from providers.gaussian_class_toy import GaussianClassToyStream
-from providers.poisson_toy import PoissonToyStream
+from data_providers.base import StreamBatch
+from data_providers.gaussian_class_toy import GaussianClassToyStream
+from data_providers.poisson_toy import PoissonToyStream
 
 __all__ = [
     "BoostingFamily",
