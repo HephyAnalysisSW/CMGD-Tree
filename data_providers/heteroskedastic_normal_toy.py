@@ -5,11 +5,11 @@ from typing import Iterator
 
 import numpy as np
 
-from data_providers.base import PlotConfigProvider, StreamBatch
+from data_providers.base import StreamBatch
 
 
 @dataclass
-class HeteroskedasticNormalToyStream(PlotConfigProvider):
+class HeteroskedasticNormalToyStream:
     n_features: int
     n_classes: int
     batch_size: int
@@ -53,10 +53,3 @@ class HeteroskedasticNormalToyStream(PlotConfigProvider):
         y = (mu + np.sqrt(var).astype(np.float32, copy=False) * self._rng.normal(size=self.batch_size)).astype(np.float32)
         target_stats = np.stack((y, y * y), axis=1).astype(np.float32, copy=False)
         return StreamBatch(x=x, target_stats=target_stats)
-
-    def plot_config(self, plot_mode: str = "auto", n_bins: int = 80) -> dict:
-        if plot_mode == "auto":
-            plot_mode = "heteroskedastic"
-        if plot_mode in {"all", "heteroskedastic", "heteroskedastic_normal_scalar"}:
-            return {"mode": "heteroskedastic_normal_scalar", "feature_indices": list(range(self.n_features))}
-        raise ValueError(f"Unsupported plot_mode '{plot_mode}' for HeteroskedasticNormalToyStream.")

@@ -1,0 +1,43 @@
+tree:
+  max_bin: 64
+  cut_sample_rows: 200000
+  grow_policy: depthwise
+  max_depth: 2
+  max_leaves: 4
+  min_samples_leaf: 512
+  min_split_loss: 0.001
+  reg_lambda: 0.0
+  family: heteroskedastic_normal
+  class_weights: null
+
+dataset:
+  data_provider: heteroskedastic_normal_toy
+  n_features: 2
+  n_classes: 2
+  batch_size: 65536
+  n_batches: 24
+  seed: 0
+  feature_offset_scale: 2.5
+  feature_noise: 1.0
+
+training:
+  threads_per_block: 128
+  training_backend: auto
+  cpu_threads: 0
+  predict_method: cpu
+  cpu_predictor: numba_parallel
+  n_boost_rounds: 50
+  learning_rate: 0.2
+  fresh_inference_batch_size: null
+  fresh_inference_n_batches: null
+
+plot:
+  enabled: false
+  training_id: hetero_demo
+  n_bins: 80
+  mode: heteroskedastic_normal_scalar
+  pairs: null
+  modes: null
+  feature_indices:
+  - 0
+  - 1

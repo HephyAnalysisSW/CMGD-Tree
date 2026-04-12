@@ -2,60 +2,37 @@ from __future__ import annotations
 
 import argparse
 import ast
-import os
+from pathlib import Path
 
+try:
+    import yaml
+except ImportError as exc:
+    raise ImportError("PyYAML is required for YAML configs. Install it with `python -m pip install pyyaml`.") from exc
 from numba import set_num_threads
 
 from core.cpu_single_tree_trainer import CpuSingleTreeTrainer
 from core.gpu_single_tree_trainer import GpuSingleTreeTrainer
 from core.plot_feature_ratios import make_family_diagnostic_plots
-from examples import example_from_family_name
-from families import family_class_from_name, family_from_configs
+from data_providers import DATA_PROVIDERS, build_data_provider
+from families import family_from_configs
 
 
-TREE_CONFIG = {
-    "max_bin": 64,
-    "cut_sample_rows": 200000,
-    "grow_policy": "depthwise",
-    "max_depth": 2,
-    "max_leaves": 4,
-    "min_samples_leaf": 512,
-    "min_split_loss": 1e-3,
-    "reg_lambda": 0.0,
-    "family": "normal_identity",
-    "class_weights": None,
-}
+def _load_yaml(path: Path) -> dict:
+    with path.open("r", encoding="utf-8") as handle:
+        config = yaml.safe_load(handle) or {}
+    if not isinstance(config, dict):
+        raise ValueError(f"Top level config in '{path}' must be a mapping.")
+    return config
 
-DATASET_CONFIG = {
-    "n_features": 32,
-    "n_classes": 4,
-    "batch_size": 65536,
-    "n_batches": 12,
-    "seed": 0,
-    "feature_offset_scale": 2.5,
-    "feature_noise": 1.0,
-}
 
-TRAINING_CONFIG = {
-    "plot_training_id": "single_tree_demo",
-    "plot_bins": 80,
-    "plot_mode": "all",
-    "threads_per_block": 128,
-    "training_backend": "auto",
-    "cpu_threads": 0,
-    "predict_method": "cpu",
-    "cpu_predictor": "numba_parallel",
-    "n_boost_rounds": 2,
-    "learning_rate": 1.0,
-    "fresh_inference_batch_size": None,
-    "fresh_inference_n_batches": None,
-}
-
-CONFIG_GROUPS = {
-    "tree": TREE_CONFIG,
-    "dataset": DATASET_CONFIG,
-    "training": TRAINING_CONFIG,
-}
+def _merge_dicts(base: dict, override: dict) -> dict:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_dicts(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _cast_override(value_text: str, default_value):
@@ -78,70 +55,15 @@ def _cast_override(value_text: str, default_value):
         return value_text
 
 
-def _parse_args():
-    parser = argparse.ArgumentParser(
-        description="Boosted histogram-tree demo with optional profiling, plotting, and tree printing."
-    )
-    parser.add_argument(
-        "--modify",
-        nargs="*",
-        default=[],
-        help="Override config entries as key value pairs, e.g. --modify max_depth 6 predict_method gpu",
-    )
-    parser.add_argument(
-        "--profile",
-        action="store_true",
-        help="Profile training and evaluation. Plotting and tree printing stay off unless requested.",
-    )
-    parser.add_argument(
-        "--plot",
-        action="store_true",
-        help="Generate diagnostic plots under ./plots/<plot_training_id>/.",
-    )
-    parser.add_argument(
-        "--print-trees",
-        action="store_true",
-        help="Print the fitted trees after the run.",
-    )
-    parser.add_argument(
-        "--full-output",
-        action="store_true",
-        help="Compatibility alias for --plot --print-trees.",
-    )
-    args, _unknown = parser.parse_known_args()
-
-    all_config_keys = {}
-    for group_name, group in CONFIG_GROUPS.items():
-        for key in group:
-            if key in all_config_keys:
-                raise ValueError(
-                    f"Duplicate config key '{key}' in '{group_name}' and '{all_config_keys[key]}'."
-                )
-            all_config_keys[key] = group_name
-
-    if len(args.modify) % 2 != 0:
-        raise ValueError("--modify expects an even number of arguments: key1 value1 key2 value2 ...")
-
-    for key, value_text in zip(args.modify[0::2], args.modify[1::2]):
-        if key not in all_config_keys:
-            raise KeyError(f"Unknown config key '{key}'.")
-        group = CONFIG_GROUPS[all_config_keys[key]]
-        group[key] = _cast_override(value_text, group.get(key))
-
-    if TREE_CONFIG.get("grow_policy") not in {"depthwise", "lossguide"}:
-        raise ValueError("grow_policy must be 'depthwise' or 'lossguide'.")
-    if TREE_CONFIG.get("family") not in {"normal_identity", "heteroskedastic_normal", "heteroskedastic_normal_ngd", "gamma", "gamma_mgd", "negative_binomial", "negative_binomial_mgd", "poisson", "poisson_mgd", "poisson_ngd"}:
-        raise ValueError("family must be 'normal_identity', 'heteroskedastic_normal', 'heteroskedastic_normal_ngd', 'gamma', 'gamma_mgd', 'negative_binomial', 'negative_binomial_mgd', 'poisson', 'poisson_mgd', or 'poisson_ngd'.")
-    if TRAINING_CONFIG.get("training_backend") not in {"auto", "gpu", "cpu"}:
-        raise ValueError("training_backend must be 'auto', 'gpu', or 'cpu'.")
-    if TRAINING_CONFIG.get("predict_method") not in {"cpu", "gpu"}:
-        raise ValueError("predict_method must be 'cpu' or 'gpu'.")
-    if TRAINING_CONFIG.get("cpu_predictor") not in {"index", "leaf_mask", "numba", "numba_parallel"}:
-        raise ValueError("cpu_predictor must be 'index', 'leaf_mask', 'numba', or 'numba_parallel'.")
-    if args.full_output:
-        args.plot = True
-        args.print_trees = True
-    return args
+def _resolve_config_path(config_arg: str, repo_root: Path) -> Path:
+    config_path = Path(config_arg)
+    if config_path.exists():
+        return config_path.resolve()
+    if not config_path.suffix:
+        candidate = repo_root / "configs" / "examples" / f"{config_arg}.yaml"
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"Could not find config '{config_arg}'.")
 
 
 def _default_cpu_threads() -> int:
@@ -161,28 +83,120 @@ def _resolve_training_backend(requested_backend: str) -> str:
     return "cpu"
 
 
-def _apply_example_defaults(modified_keys: set[str]) -> None:
-    example = example_from_family_name(TREE_CONFIG.get("family", "normal_identity"))
-    for key, value in example.tree_defaults.items():
-        if key not in modified_keys:
-            TREE_CONFIG[key] = value
-    for key, value in example.dataset_defaults.items():
-        if key not in modified_keys:
-            DATASET_CONFIG[key] = value
-    for key, value in example.training_defaults.items():
-        if key not in modified_keys:
-            TRAINING_CONFIG[key] = value
+def _validate_config(tree_config: dict, dataset_config: dict, training_config: dict, plot_config: dict) -> None:
+    if tree_config.get("grow_policy") not in {"depthwise", "lossguide"}:
+        raise ValueError("grow_policy must be 'depthwise' or 'lossguide'.")
+    if tree_config.get("family") not in {
+        "normal_identity",
+        "heteroskedastic_normal",
+        "heteroskedastic_normal_ngd",
+        "gamma",
+        "gamma_mgd",
+        "negative_binomial",
+        "negative_binomial_mgd",
+        "poisson",
+        "poisson_mgd",
+        "poisson_ngd",
+    }:
+        raise ValueError(
+            "family must be 'normal_identity', 'heteroskedastic_normal', 'heteroskedastic_normal_ngd', "
+            "'gamma', 'gamma_mgd', 'negative_binomial', 'negative_binomial_mgd', 'poisson', "
+            "'poisson_mgd', or 'poisson_ngd'."
+        )
+    if dataset_config.get("data_provider") not in DATA_PROVIDERS:
+        raise ValueError(f"data_provider must be one of {sorted(DATA_PROVIDERS)}.")
+    if training_config.get("training_backend") not in {"auto", "gpu", "cpu"}:
+        raise ValueError("training_backend must be 'auto', 'gpu', or 'cpu'.")
+    if training_config.get("predict_method") not in {"cpu", "gpu"}:
+        raise ValueError("predict_method must be 'cpu' or 'gpu'.")
+    if training_config.get("cpu_predictor") not in {"index", "leaf_mask", "numba", "numba_parallel"}:
+        raise ValueError("cpu_predictor must be 'index', 'leaf_mask', 'numba', or 'numba_parallel'.")
+    if not isinstance(plot_config, dict):
+        raise ValueError("plot config must be a mapping.")
 
 
-ARGS = _parse_args()
-MODIFIED_KEYS = set(ARGS.modify[0::2])
-_apply_example_defaults(MODIFIED_KEYS)
-RESOLVED_TRAINING_BACKEND = _resolve_training_backend(TRAINING_CONFIG.get("training_backend"))
-TRAINING_CONFIG["training_backend"] = RESOLVED_TRAINING_BACKEND
+REPO_ROOT = Path(__file__).resolve().parent
+DEFAULT_CONFIG_PATH = REPO_ROOT / "configs" / "default.yaml"
+DEFAULT_EXAMPLE_CONFIG_PATH = REPO_ROOT / "configs" / "examples" / "normal_identity.yaml"
+
+PARSER = argparse.ArgumentParser(
+    description="Boosted histogram-tree demo with optional profiling, plotting, and tree printing."
+)
+PARSER.add_argument(
+    "--config",
+    default=str(DEFAULT_EXAMPLE_CONFIG_PATH),
+    help="YAML config path or example name, e.g. --config poisson or --config configs/examples/poisson.yaml",
+)
+PARSER.add_argument(
+    "--modify",
+    nargs="*",
+    default=[],
+    help="Override config entries as key value pairs, e.g. --modify max_depth 6 predict_method gpu",
+)
+PARSER.add_argument(
+    "--profile",
+    action="store_true",
+    help="Profile training and evaluation. Plotting and tree printing stay off unless requested.",
+)
+PARSER.add_argument(
+    "--plot",
+    action="store_true",
+    help="Generate diagnostic plots under ./plots/<training_id>/.",
+)
+PARSER.add_argument(
+    "--print-trees",
+    action="store_true",
+    help="Print the fitted trees after the run.",
+)
+PARSER.add_argument(
+    "--full-output",
+    action="store_true",
+    help="Compatibility alias for --plot --print-trees.",
+)
+
+ARGS, _UNKNOWN_ARGS = PARSER.parse_known_args()
+USER_CONFIG_PATH = _resolve_config_path(ARGS.config, REPO_ROOT)
+CONFIG = _merge_dicts(_load_yaml(DEFAULT_CONFIG_PATH), _load_yaml(USER_CONFIG_PATH))
+TREE_CONFIG = dict(CONFIG.get("tree", {}))
+DATASET_CONFIG = dict(CONFIG.get("dataset", {}))
+TRAINING_CONFIG = dict(CONFIG.get("training", {}))
+PLOT_CONFIG = dict(CONFIG.get("plot", {}))
+CONFIG_GROUPS = {
+    "tree": TREE_CONFIG,
+    "dataset": DATASET_CONFIG,
+    "training": TRAINING_CONFIG,
+    "plot": PLOT_CONFIG,
+}
+
+ALL_CONFIG_KEYS = {}
+for GROUP_NAME, GROUP_CONFIG in CONFIG_GROUPS.items():
+    for KEY in GROUP_CONFIG:
+        if KEY in ALL_CONFIG_KEYS:
+            raise ValueError(f"Duplicate config key '{KEY}' in '{GROUP_NAME}' and '{ALL_CONFIG_KEYS[KEY]}'.")
+        ALL_CONFIG_KEYS[KEY] = GROUP_NAME
+
+if len(ARGS.modify) % 2 != 0:
+    raise ValueError("--modify expects an even number of arguments: key1 value1 key2 value2 ...")
+
+for KEY, VALUE_TEXT in zip(ARGS.modify[0::2], ARGS.modify[1::2]):
+    if KEY not in ALL_CONFIG_KEYS:
+        raise KeyError(f"Unknown config key '{KEY}'.")
+    GROUP = CONFIG_GROUPS[ALL_CONFIG_KEYS[KEY]]
+    GROUP[KEY] = _cast_override(VALUE_TEXT, GROUP.get(KEY))
+
+if ARGS.full_output:
+    ARGS.plot = True
+    ARGS.print_trees = True
+if ARGS.plot:
+    PLOT_CONFIG["enabled"] = True
+
+_validate_config(TREE_CONFIG, DATASET_CONFIG, TRAINING_CONFIG, PLOT_CONFIG)
+TRAINING_CONFIG["training_backend"] = _resolve_training_backend(TRAINING_CONFIG.get("training_backend"))
 if TRAINING_CONFIG.get("cpu_threads", 0) <= 0:
     TRAINING_CONFIG["cpu_threads"] = _default_cpu_threads()
 if TRAINING_CONFIG.get("training_backend") == "cpu" and TRAINING_CONFIG.get("predict_method") == "gpu":
     raise ValueError("training_backend=cpu currently requires predict_method=cpu.")
+
 set_num_threads(int(TRAINING_CONFIG.get("cpu_threads")))
 FAMILY = family_from_configs(TREE_CONFIG, DATASET_CONFIG)
 if TRAINING_CONFIG.get("training_backend") == "gpu":
@@ -190,57 +204,53 @@ if TRAINING_CONFIG.get("training_backend") == "gpu":
 else:
     TRAINER = CpuSingleTreeTrainer(TREE_CONFIG, DATASET_CONFIG, TRAINING_CONFIG, FAMILY)
 
+print("Config file:", USER_CONFIG_PATH)
+print("Training backend:", TRAINING_CONFIG.get("training_backend"))
+print("Device:", TRAINER.device_name)
+print("Tree config:", TREE_CONFIG)
+print("Dataset config:", DATASET_CONFIG)
+print("Training config:", TRAINING_CONFIG)
+print("Plot config:", PLOT_CONFIG)
+print("Family:", FAMILY.name)
+print("Class weights:", None if FAMILY.class_weights is None else FAMILY.class_weights.tolist())
+print(
+    f"Building a boosted tree ensemble with grow_policy={TREE_CONFIG.get('grow_policy')}, "
+    f"max_depth={TREE_CONFIG.get('max_depth')}, max_leaves={TREE_CONFIG.get('max_leaves')}, "
+    f"max_bin={TREE_CONFIG.get('max_bin')}, rounds={TRAINING_CONFIG.get('n_boost_rounds')}"
+)
 
-def main():
-    print("Training backend:", TRAINING_CONFIG.get("training_backend"))
-    print("Device:", TRAINER.device_name)
-    print("Tree config:", TREE_CONFIG)
-    print("Dataset config:", DATASET_CONFIG)
-    print("Training config:", TRAINING_CONFIG)
-    print("Family:", FAMILY.name)
-    print("Class weights:", None if FAMILY.class_weights is None else FAMILY.class_weights.tolist())
-    print(
-        f"Building a boosted tree ensemble with grow_policy={TREE_CONFIG.get('grow_policy')}, "
-        f"max_depth={TREE_CONFIG.get('max_depth')}, max_leaves={TREE_CONFIG.get('max_leaves')}, "
-        f"max_bin={TREE_CONFIG.get('max_bin')}, rounds={TRAINING_CONFIG.get('n_boost_rounds')}"
-    )
+MODEL, DATA_PROVIDER_KWARGS, TRAIN_METRIC, MEAN_SUM_PROB, LOSS_HISTORY = TRAINER.run(profile=ARGS.profile)
+print()
+print(f"Built boosted ensemble with {len(MODEL.trees)} trees.")
+print(f"Objective: {FAMILY.name}")
+print(f"Initial train {FAMILY.monitor_name}: {LOSS_HISTORY[0]:.6f}")
+print(f"Final streamed train {FAMILY.monitor_name}: {TRAIN_METRIC:.6f}")
+print(f"Mean sum of predictions: {MEAN_SUM_PROB:.6f}")
+print(f"Prediction method: {TRAINING_CONFIG.get('predict_method')}")
+if TRAINING_CONFIG.get("predict_method") == "cpu":
+    print(f"CPU predictor: {TRAINING_CONFIG.get('cpu_predictor')}")
 
-    model, provider_kwargs, train_metric, mean_sum_prob, loss_history = TRAINER.run(profile=ARGS.profile)
+if ARGS.print_trees:
     print()
-    print(f"Built boosted ensemble with {len(model.trees)} trees.")
-    print(f"Objective: {FAMILY.name}")
-    print(f"Initial train {FAMILY.monitor_name}: {loss_history[0]:.6f}")
-    print(f"Final streamed train {FAMILY.monitor_name}: {train_metric:.6f}")
-    print(f"Mean sum of predictions: {mean_sum_prob:.6f}")
-    print(f"Prediction method: {TRAINING_CONFIG.get('predict_method')}")
-    if TRAINING_CONFIG.get("predict_method") == "cpu":
-        print(f"CPU predictor: {TRAINING_CONFIG.get('cpu_predictor')}")
-    return model, provider_kwargs
-
-
-if __name__ == "__main__":
-    model, provider_kwargs = main()
-    if ARGS.print_trees:
+    for TREE_IDX, TREE in enumerate(MODEL.trees, start=1):
+        print(f"Tree {TREE_IDX}:")
+        TREE.print_tree()
         print()
-        for tree_idx, tree in enumerate(model.trees, start=1):
-            print(f"Tree {tree_idx}:")
-            tree.print_tree()
-            print()
-    if ARGS.plot:
-        make_family_diagnostic_plots(
-            training_id=TRAINING_CONFIG.get("plot_training_id"),
-            provider_class=FAMILY.provider_class,
-            provider_kwargs=provider_kwargs,
-            predictor=lambda x: model.predict_batch(
-                x,
-                predict_method=TRAINING_CONFIG.get("predict_method"),
-                gpu_predictor=lambda batch: TRAINER.predict_model_batch(model, batch),
-                predict_from_state=FAMILY.predict_from_state,
-                cpu_predictor=TRAINING_CONFIG.get("cpu_predictor"),
-            ),
-            n_classes=DATASET_CONFIG.get("n_classes"),
-            plot_mode=TRAINING_CONFIG.get("plot_mode"),
-            n_bins=TRAINING_CONFIG.get("plot_bins"),
-        )
-        print()
-        print(f"Saved validation plots under ./plots/{TRAINING_CONFIG.get('plot_training_id')}/")
+
+if PLOT_CONFIG.get("enabled"):
+    PLOT_PROVIDER = build_data_provider(DATASET_CONFIG, class_weights=FAMILY.class_weights)
+    make_family_diagnostic_plots(
+        training_id=PLOT_CONFIG.get("training_id"),
+        provider=PLOT_PROVIDER,
+        predictor=lambda x: MODEL.predict_batch(
+            x,
+            predict_method=TRAINING_CONFIG.get("predict_method"),
+            gpu_predictor=lambda batch: TRAINER.predict_model_batch(MODEL, batch),
+            predict_from_state=FAMILY.predict_from_state,
+            cpu_predictor=TRAINING_CONFIG.get("cpu_predictor"),
+        ),
+        n_classes=DATASET_CONFIG.get("n_classes"),
+        plot_config=PLOT_CONFIG,
+    )
+    print()
+    print(f"Saved validation plots under ./plots/{PLOT_CONFIG.get('training_id')}/")

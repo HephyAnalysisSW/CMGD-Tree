@@ -240,12 +240,14 @@ python fit_single_tree_hist_demo.py \
 
 Top-level options:
 
+- `--config path-or-name`
+  load a complete example YAML, e.g. `--config poisson`
 - `--modify key value ...`
   override config values
 - `--profile`
   print timing and memory summaries
 - `--plot`
-  write plots under `./plots/<plot_training_id>/`
+  write plots under `./plots/<training_id>/`
 - `--print-trees`
   print the fitted trees
 - `--full-output`
@@ -262,47 +264,19 @@ python fit_single_tree_hist_demo.py \
 
 ## Config Keys
 
-These are the settings you will usually touch.
+The runnable examples now live in YAML:
 
-```python
-TREE_CONFIG = {
-    "max_bin": 64,
-    "cut_sample_rows": 200000,
-    "grow_policy": "depthwise",
-    "max_depth": 2,
-    "max_leaves": 4,
-    "min_samples_leaf": 512,
-    "min_split_loss": 1e-3,
-    "reg_lambda": 0.0,
-    "family": "normal_identity",
-    "class_weights": None,
-}
+- `configs/default.yaml`
+  internal fallback defaults
+- `configs/examples/*.yaml`
+  complete user-facing example configs
 
-DATASET_CONFIG = {
-    "n_features": 32,
-    "n_classes": 4,
-    "batch_size": 65536,
-    "n_batches": 12,
-    "seed": 0,
-    "feature_offset_scale": 2.5,
-    "feature_noise": 1.0,
-}
+Each example YAML has four top-level groups:
 
-TRAINING_CONFIG = {
-    "plot_training_id": "single_tree_demo",
-    "plot_bins": 80,
-    "plot_mode": "all",
-    "threads_per_block": 128,
-    "training_backend": "auto",
-    "cpu_threads": 0,
-    "predict_method": "cpu",
-    "cpu_predictor": "numba_parallel",
-    "n_boost_rounds": 2,
-    "learning_rate": 1.0,
-    "fresh_inference_batch_size": None,
-    "fresh_inference_n_batches": None,
-}
-```
+- `tree`
+- `dataset`
+- `training`
+- `plot`
 
 Most important keys:
 
@@ -323,19 +297,17 @@ Two keys that are useful but easy to misunderstand:
 - `max_bin`
   controls how fine the histogram split search is
 
-## Example Defaults
+## Example Configs
 
-Some examples come with their own starter settings.
+Each example YAML is explicit and self-contained.
 
 For example:
 
-- `heteroskedastic_normal`
-  uses a smaller 2D setup and a safer learning rate
-- `gamma`
-  and `negative_binomial`
-  start with `50` rounds and `learning_rate = 0.2`
-
-These defaults are applied only if you do not override them yourself.
+- `configs/examples/heteroskedastic_normal.yaml`
+  uses the 2D heteroskedastic toy stream and scalar diagnostic plot mode
+- `configs/examples/gamma.yaml`
+  and `configs/examples/negative_binomial.yaml`
+  use their matching toy streams and longer boosted runs
 
 ## Prediction Modes
 
@@ -381,7 +353,7 @@ If you extend the project:
 
 - add a new statistical model in `families/`
 - add a new toy generator or real loader in `data_providers/`
-- add a new runnable setup in `examples/`
+- add a new runnable setup in `configs/examples/`
 
 That is the intended workflow for new users as well:
 

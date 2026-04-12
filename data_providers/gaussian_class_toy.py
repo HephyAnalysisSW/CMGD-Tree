@@ -5,11 +5,11 @@ from typing import Iterator
 
 import numpy as np
 
-from data_providers.base import PlotConfigProvider, StreamBatch
+from data_providers.base import StreamBatch
 
 
 @dataclass
-class GaussianClassToyStream(PlotConfigProvider):
+class GaussianClassToyStream:
     n_features: int
     n_classes: int
     batch_size: int
@@ -48,22 +48,3 @@ class GaussianClassToyStream(PlotConfigProvider):
         x += self._class_means[cls]
         sample_weight = None if self.class_weights is None else self.class_weights[cls].astype(np.float32, copy=False)
         return StreamBatch(x=x, target_stats=self._class_targets[cls], sample_weight=sample_weight)
-
-    def plot_config(self, plot_mode: str = "auto", n_bins: int = 80) -> dict:
-        mean_pairs = [
-            (feature_idx, target_idx)
-            for feature_idx in range(self.n_features)
-            for target_idx in range(self.n_classes)
-        ]
-        if plot_mode == "auto":
-            plot_mode = "all"
-        if plot_mode == "all":
-            return {
-                "modes": [
-                    {"mode": "feature_target_mean", "pairs": mean_pairs},
-                    {"mode": "class_density", "feature_indices": list(range(self.n_features))},
-                ]
-            }
-        if plot_mode == "feature_target_mean":
-            return {"mode": "feature_target_mean", "pairs": mean_pairs}
-        return {"mode": "class_density", "feature_indices": list(range(self.n_features))}

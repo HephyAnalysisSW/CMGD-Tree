@@ -7,6 +7,7 @@ import cupy as cp
 import numpy as np
 from numba import cuda
 
+from data_providers import data_provider_kwargs
 from core.single_tree import AdditiveEnsemble, Node, SingleTree
 from core.training_cache import TrainingCache, TrainingCacheBatch
 
@@ -418,7 +419,7 @@ class GpuSingleTreeTrainer:
         return str(cuda.get_current_device().name)
 
     def provider_kwargs(self) -> dict:
-        return self.family.provider_kwargs(self.dataset_config)
+        return data_provider_kwargs(self.dataset_config, class_weights=self.family.class_weights)
 
     def fresh_inference_dataset_config(self) -> dict:
         fresh_config = dict(self.dataset_config)

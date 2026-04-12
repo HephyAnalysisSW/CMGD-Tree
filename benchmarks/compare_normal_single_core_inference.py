@@ -3,9 +3,16 @@ from __future__ import annotations
 import ast
 import json
 import time
+import argparse
+import sys
+from pathlib import Path
 
 import numpy as np
 import xgboost as xgb
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from core.cpu_single_tree_trainer import CpuSingleTreeTrainer
 from core.gpu_single_tree_trainer import GpuSingleTreeTrainer
@@ -35,22 +42,6 @@ COMPARE_CONFIG = {
     "xgb_n_jobs": 1,
     "xgb_multi_strategy": "multi_output_tree",
 }
-
-
-def parse_args():
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Apples-to-apples single-core fresh inference comparison.")
-    parser.add_argument("--modify", nargs="*", default=[])
-    parser.add_argument("--result-path", default=None)
-    args, _unknown = parser.parse_known_args()
-    if len(args.modify) % 2 != 0:
-        raise ValueError("--modify expects key value pairs.")
-    for key, value_text in zip(args.modify[0::2], args.modify[1::2]):
-        if key not in COMPARE_CONFIG:
-            raise KeyError(f"Unknown config key '{key}'.")
-        COMPARE_CONFIG[key] = cast_override(value_text, COMPARE_CONFIG[key])
-    return args
 
 
 def cast_override(value_text: str, default_value):
@@ -122,6 +113,7 @@ def build_our_model():
         "class_weights": None,
     }
     dataset_config = {
+        "data_provider": "gaussian_class_toy",
         "n_features": COMPARE_CONFIG["n_features"],
         "n_classes": COMPARE_CONFIG["n_classes"],
         "batch_size": COMPARE_CONFIG["train_batch_size"],
@@ -131,9 +123,6 @@ def build_our_model():
         "feature_noise": COMPARE_CONFIG["feature_noise"],
     }
     training_config = {
-        "plot_training_id": "single_tree_demo",
-        "plot_bins": 80,
-        "plot_mode": "all",
         "threads_per_block": 128,
         "training_backend": COMPARE_CONFIG["training_backend"],
         "cpu_threads": COMPARE_CONFIG["cpu_threads"],
@@ -268,18 +257,24 @@ def write_results(result_path: str, our_stats: dict, xgb_stats: dict) -> None:
         fout.write("\n")
 
 
-def main():
-    args = parse_args()
-    print("Compare config:", COMPARE_CONFIG)
-    our_stats = build_our_model()
-    xgb_stats = build_xgb_model()
-    print()
-    print_stats("ours", our_stats)
-    print()
-    print_stats("xgboost", xgb_stats)
-    if args.result_path:
-        write_results(args.result_path, our_stats, xgb_stats)
+PARSER = argparse.ArgumentParser(description="Apples-to-apples single-core fresh inference comparison.")
+PARSER.add_argument("--modify", nargs="*", default=[])
+PARSER.add_argument("--result-path", default=None)
+ARGS, _UNKNOWN_ARGS = PARSER.parse_known_args()
 
+if len(ARGS.modify) % 2 != 0:
+    raise ValueError("--modify expects key value pairs.")
+for KEY, VALUE_TEXT in zip(ARGS.modify[0::2], ARGS.modify[1::2]):
+    if KEY not in COMPARE_CONFIG:
+        raise KeyError(f"Unknown config key '{KEY}'.")
+    COMPARE_CONFIG[KEY] = cast_override(VALUE_TEXT, COMPARE_CONFIG[KEY])
 
-if __name__ == "__main__":
-    main()
+print("Compare config:", COMPARE_CONFIG)
+OUR_STATS = build_our_model()
+XGB_STATS = build_xgb_model()
+print()
+print_stats("ours", OUR_STATS)
+print()
+print_stats("xgboost", XGB_STATS)
+if ARGS.result_path:
+    write_results(ARGS.result_path, OUR_STATS, XGB_STATS)

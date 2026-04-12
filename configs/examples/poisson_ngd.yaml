@@ -1,0 +1,85 @@
+tree:
+  max_bin: 64
+  cut_sample_rows: 200000
+  grow_policy: depthwise
+  max_depth: 2
+  max_leaves: 4
+  min_samples_leaf: 512
+  min_split_loss: 0.001
+  reg_lambda: 0.0
+  family: poisson_ngd
+  class_weights: null
+
+dataset:
+  data_provider: poisson_toy
+  n_features: 32
+  n_classes: 4
+  batch_size: 65536
+  n_batches: 12
+  seed: 0
+  feature_offset_scale: 2.5
+  feature_noise: 1.0
+
+training:
+  threads_per_block: 128
+  training_backend: auto
+  cpu_threads: 0
+  predict_method: cpu
+  cpu_predictor: numba_parallel
+  n_boost_rounds: 2
+  learning_rate: 1.0
+  fresh_inference_batch_size: null
+  fresh_inference_n_batches: null
+
+plot:
+  enabled: false
+  training_id: poisson_ngd_demo
+  n_bins: 80
+  mode: all
+  feature_indices:
+  - 0
+  - 1
+  - 2
+  - 3
+  pairs:
+  - [0, 0]
+  - [0, 1]
+  - [0, 2]
+  - [0, 3]
+  - [1, 0]
+  - [1, 1]
+  - [1, 2]
+  - [1, 3]
+  - [2, 0]
+  - [2, 1]
+  - [2, 2]
+  - [2, 3]
+  - [3, 0]
+  - [3, 1]
+  - [3, 2]
+  - [3, 3]
+  modes:
+  - mode: feature_target_mean
+    pairs:
+    - [0, 0]
+    - [0, 1]
+    - [0, 2]
+    - [0, 3]
+    - [1, 0]
+    - [1, 1]
+    - [1, 2]
+    - [1, 3]
+    - [2, 0]
+    - [2, 1]
+    - [2, 2]
+    - [2, 3]
+    - [3, 0]
+    - [3, 1]
+    - [3, 2]
+    - [3, 3]
+  - mode: class_density
+    feature_indices:
+    - 0
+    - 1
+    - 2
+    - 3

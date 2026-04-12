@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterator
 
 import numpy as np
 
 from families.base import BoostingFamily, class_weight_vector
-from data_providers.base import StreamBatch
-from data_providers.gamma_toy import GammaToyStream
 
 
 @dataclass
@@ -18,7 +15,6 @@ class GammaMGDFamily(BoostingFamily):
     use_weights: bool
     name: str = "gamma"
     monitor_name: str = "Gamma NLL"
-    provider_class = GammaToyStream
     clip_epsilon: float = 1.0e-6
     shape: float = 3.0
 
@@ -26,21 +22,6 @@ class GammaMGDFamily(BoostingFamily):
     def from_configs(cls, tree_config: dict, dataset_config: dict) -> "GammaMGDFamily":
         class_weights, use_weights = class_weight_vector(tree_config, dataset_config.get("n_classes"))
         return cls(prediction_dim=dataset_config.get("n_classes"), class_weights=class_weights, use_weights=use_weights)
-
-    def provider_kwargs(self, dataset_config: dict) -> dict:
-        return {
-            "n_features": dataset_config.get("n_features"),
-            "n_classes": dataset_config.get("n_classes"),
-            "batch_size": dataset_config.get("batch_size"),
-            "n_batches": dataset_config.get("n_batches"),
-            "feature_offset_scale": dataset_config.get("feature_offset_scale"),
-            "feature_noise": dataset_config.get("feature_noise"),
-            "seed": dataset_config.get("seed"),
-            "shape": self.shape,
-        }
-
-    def stream_batches(self, dataset_config: dict) -> Iterator[StreamBatch]:
-        yield from self.provider_class(**self.provider_kwargs(dataset_config))
 
     def base_state(self, target_stat_mean: np.ndarray) -> np.ndarray:
         return np.maximum(target_stat_mean.astype(np.float32, copy=True), self.clip_epsilon)

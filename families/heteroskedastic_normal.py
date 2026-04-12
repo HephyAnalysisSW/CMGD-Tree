@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterator
 
 import numpy as np
 
 from families.base import BoostingFamily
-from data_providers.base import StreamBatch
-from data_providers.heteroskedastic_normal_toy import HeteroskedasticNormalToyStream
 
 
 @dataclass
@@ -17,7 +14,6 @@ class HeteroskedasticNormalFamily(BoostingFamily):
     use_weights: bool = False
     name: str = "heteroskedastic_normal"
     monitor_name: str = "Gaussian NLL"
-    provider_class = HeteroskedasticNormalToyStream
     min_variance: float = 0.1
 
     @classmethod
@@ -25,20 +21,6 @@ class HeteroskedasticNormalFamily(BoostingFamily):
         if dataset_config.get("n_classes") != 2:
             raise ValueError("heteroskedastic_normal expects n_classes=2 for target stats [y, y^2].")
         return cls(prediction_dim=2)
-
-    def provider_kwargs(self, dataset_config: dict) -> dict:
-        return {
-            "n_features": dataset_config.get("n_features"),
-            "n_classes": dataset_config.get("n_classes"),
-            "batch_size": dataset_config.get("batch_size"),
-            "n_batches": dataset_config.get("n_batches"),
-            "feature_offset_scale": dataset_config.get("feature_offset_scale"),
-            "feature_noise": dataset_config.get("feature_noise"),
-            "seed": dataset_config.get("seed"),
-        }
-
-    def stream_batches(self, dataset_config: dict) -> Iterator[StreamBatch]:
-        yield from self.provider_class(**self.provider_kwargs(dataset_config))
 
     def base_state(self, target_stat_mean: np.ndarray) -> np.ndarray:
         state = target_stat_mean.astype(np.float32, copy=True)

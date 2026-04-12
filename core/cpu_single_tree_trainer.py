@@ -6,6 +6,7 @@ import time
 import numpy as np
 from numba import njit, prange, set_num_threads
 
+from data_providers import data_provider_kwargs
 from core.single_tree import AdditiveEnsemble, Node, SingleTree
 from core.training_cache import TrainingCache, TrainingCacheBatch
 
@@ -334,7 +335,7 @@ class CpuSingleTreeTrainer:
         return "CPU"
 
     def provider_kwargs(self) -> dict:
-        return self.family.provider_kwargs(self.dataset_config)
+        return data_provider_kwargs(self.dataset_config, class_weights=self.family.class_weights)
 
     def fresh_inference_dataset_config(self) -> dict:
         fresh_config = dict(self.dataset_config)

@@ -225,20 +225,17 @@ def _plot_heteroskedastic_normal_scalar(
 
 def make_family_diagnostic_plots(
     training_id: str,
-    provider_class,
-    provider_kwargs: dict,
+    provider,
     predictor,
     n_classes: int,
-    plot_mode: str,
-    n_bins: int = 80,
+    plot_config: dict,
 ) -> None:
     out_dir = Path("plots") / training_id
     out_dir.mkdir(parents=True, exist_ok=True)
-    provider = provider_class(**provider_kwargs)
     x_all, target_stats_all, pred_all = _collect_batches(provider, predictor)
-    plot_config = provider.plot_config(plot_mode=plot_mode, n_bins=n_bins)
+    n_bins = plot_config.get("n_bins", 80)
 
-    if "modes" in plot_config:
+    if plot_config.get("modes"):
         for sub_config in plot_config["modes"]:
             mode = sub_config.get("mode")
             if mode == "class_density":

@@ -3,6 +3,13 @@ from __future__ import annotations
 import ast
 import json
 import time
+import argparse
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from numba import set_num_threads
 
@@ -51,22 +58,6 @@ def cast_override(value_text: str, default_value):
         return value_text
 
 
-def parse_args():
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Benchmark CPU training and fresh inference versus thread count.")
-    parser.add_argument("--modify", nargs="*", default=[])
-    parser.add_argument("--result-path", default=None)
-    args, _unknown = parser.parse_known_args()
-    if len(args.modify) % 2 != 0:
-        raise ValueError("--modify expects key value pairs.")
-    for key, value_text in zip(args.modify[0::2], args.modify[1::2]):
-        if key not in COMPARE_CONFIG:
-            raise KeyError(f"Unknown config key '{key}'.")
-        COMPARE_CONFIG[key] = cast_override(value_text, COMPARE_CONFIG[key])
-    return args
-
-
 def build_model():
     tree_config = {
         "max_bin": 64,
@@ -81,6 +72,7 @@ def build_model():
         "class_weights": None,
     }
     dataset_config = {
+        "data_provider": "gaussian_class_toy",
         "n_features": COMPARE_CONFIG["n_features"],
         "n_classes": COMPARE_CONFIG["n_classes"],
         "batch_size": COMPARE_CONFIG["train_batch_size"],
@@ -90,9 +82,6 @@ def build_model():
         "feature_noise": COMPARE_CONFIG["feature_noise"],
     }
     training_config = {
-        "plot_training_id": "single_tree_demo",
-        "plot_bins": 80,
-        "plot_mode": "all",
         "threads_per_block": 128,
         "training_backend": "cpu",
         "cpu_threads": COMPARE_CONFIG["cpu_threads"],
@@ -170,15 +159,21 @@ def write_results(result_path: str, stats: dict) -> None:
         fout.write("\n")
 
 
-def main():
-    args = parse_args()
-    print("Compare config:", COMPARE_CONFIG)
-    stats = build_model()
-    print()
-    print_stats(stats)
-    if args.result_path:
-        write_results(args.result_path, stats)
+PARSER = argparse.ArgumentParser(description="Benchmark CPU training and fresh inference versus thread count.")
+PARSER.add_argument("--modify", nargs="*", default=[])
+PARSER.add_argument("--result-path", default=None)
+ARGS, _UNKNOWN_ARGS = PARSER.parse_known_args()
 
+if len(ARGS.modify) % 2 != 0:
+    raise ValueError("--modify expects key value pairs.")
+for KEY, VALUE_TEXT in zip(ARGS.modify[0::2], ARGS.modify[1::2]):
+    if KEY not in COMPARE_CONFIG:
+        raise KeyError(f"Unknown config key '{KEY}'.")
+    COMPARE_CONFIG[KEY] = cast_override(VALUE_TEXT, COMPARE_CONFIG[KEY])
 
-if __name__ == "__main__":
-    main()
+print("Compare config:", COMPARE_CONFIG)
+STATS = build_model()
+print()
+print_stats(STATS)
+if ARGS.result_path:
+    write_results(ARGS.result_path, STATS)

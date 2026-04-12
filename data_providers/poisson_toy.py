@@ -5,11 +5,11 @@ from typing import Iterator
 
 import numpy as np
 
-from data_providers.base import PlotConfigProvider, StreamBatch
+from data_providers.base import StreamBatch
 
 
 @dataclass
-class PoissonToyStream(PlotConfigProvider):
+class PoissonToyStream:
     n_features: int
     n_classes: int
     batch_size: int
@@ -46,20 +46,3 @@ class PoissonToyStream(PlotConfigProvider):
         mu = np.exp(np.clip(log_mu, -4.0, 4.0)).astype(self.dtype, copy=False)
         target_stats = self._rng.poisson(mu).astype(self.dtype)
         return StreamBatch(x=x, target_stats=target_stats)
-
-    def plot_config(self, plot_mode: str = "auto", n_bins: int = 80) -> dict:
-        pairs = [
-            (feature_idx, target_idx)
-            for feature_idx in range(self.n_features)
-            for target_idx in range(self.n_classes)
-        ]
-        if plot_mode == "auto":
-            plot_mode = "all"
-        if plot_mode == "all":
-            return {
-                "modes": [
-                    {"mode": "feature_target_mean", "pairs": pairs},
-                    {"mode": "class_density", "feature_indices": list(range(self.n_features))},
-                ]
-            }
-        return {"mode": "feature_target_mean", "pairs": pairs}

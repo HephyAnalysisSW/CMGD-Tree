@@ -4,6 +4,7 @@ from typing import Iterator
 
 import numpy as np
 
+from data_providers import stream_batches
 from data_providers.base import StreamBatch
 
 
@@ -35,15 +36,9 @@ class BoostingFamily:
     use_weights: bool
     name: str
     monitor_name: str
-    provider_class: type
-
-    def provider_kwargs(self, dataset_config: dict) -> dict:
-        """Return kwargs used to construct the streamed toy provider."""
-        raise NotImplementedError
-
     def stream_batches(self, dataset_config: dict) -> Iterator[StreamBatch]:
         """Yield streamed training/evaluation batches."""
-        raise NotImplementedError
+        yield from stream_batches(dataset_config, class_weights=self.class_weights)
 
     def base_state(self, target_stat_mean: np.ndarray) -> np.ndarray:
         """Return the initial model state for boosting."""
