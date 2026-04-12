@@ -1,61 +1,107 @@
 # CMGD-Tree
 
-CMGD-Tree is a small sandbox for streamed histogram-tree boosting with:
+CMGD-Tree is a small playground for probabilistic tree boosting with:
 
-- GPU training
+- streamed toy data
+- histogram-based trees
+- CPU or GPU training
 - CPU or GPU prediction
-- family-specific losses and target statistics
-- MGD and NGD examples
-- toy data providers for quick experiments
+- family-side MGD and NGD updates
 
-The main command is:
+If you want one mental model for the codebase, use this:
 
-```bash
-python fit_single_tree_hist_demo.py
-```
+- choose a `family`
+- choose the input and output dimensions
+- choose the tree size and number of boosting rounds
+- run the demo
 
-Latest writeup PDF:
-
-- [GitHub Pages PDF](https://hephyanalysissw.github.io/CMGD-Tree/writeup.pdf)
-- [Actions workflow page](https://github.com/HephyAnalysisSW/CMGD-Tree/actions/workflows/build-writeup.yml)
-
-## What You Can Run
-
-If you just want to see something work:
-
-Run the default normal example:
+The main entry point is:
 
 ```bash
 python fit_single_tree_hist_demo.py
 ```
 
-Run the same example and print the fitted trees:
+Writeup:
+
+- [PDF](https://hephyanalysissw.github.io/CMGD-Tree/writeup.pdf)
+- [build workflow](https://github.com/HephyAnalysisSW/CMGD-Tree/actions/workflows/build-writeup.yml)
+
+## Quick Start
+
+Start with the default multi-dimensional Gaussian example:
+
+```bash
+python fit_single_tree_hist_demo.py
+```
+
+That runs the `normal_identity` family with:
+
+- `n_features = 32`
+- `n_classes = 4`
+- shallow trees
+- 2 boosting rounds
+
+If you want to see the fitted trees:
 
 ```bash
 python fit_single_tree_hist_demo.py --print-trees
 ```
 
-Run the same example and generate plots:
+If you want timing output:
+
+```bash
+python fit_single_tree_hist_demo.py --profile
+```
+
+If you want plots:
 
 ```bash
 python fit_single_tree_hist_demo.py --plot
 ```
 
-Run the same example with both plots and printed trees:
+## A Good First Run
+
+A more realistic first run is a slightly larger multi-dimensional Gaussian:
 
 ```bash
-python fit_single_tree_hist_demo.py --plot --print-trees
+python fit_single_tree_hist_demo.py \
+  --print-trees \
+  --modify \
+    family normal_identity \
+    n_features 8 \
+    n_classes 4 \
+    max_depth 3 \
+    max_leaves 8 \
+    n_boost_rounds 20 \
+    learning_rate 0.2
 ```
 
-Write the output to a log file:
+Read that command like this:
 
-```bash
-python fit_single_tree_hist_demo.py --plot > ~/logs/cmgtree-demo.log 2>&1
-```
+- `family normal_identity`
+  chooses the probabilistic model
+- `n_features 8`
+  sets the input dimension
+- `n_classes 4`
+  sets the output dimension
+- `max_depth 3` and `max_leaves 8`
+  make the trees more expressive
+- `n_boost_rounds 20`
+  fits a larger ensemble
+- `learning_rate 0.2`
+  makes boosting more conservative
 
-## Families and Example Commands
+That is usually the easiest place to start changing things.
 
-The current implemented families are:
+## How To Think About The Settings
+
+There are three groups of settings.
+
+### 1. Family
+
+This answers: what distribution or statistical problem am I fitting?
+
+Current families:
 
 - `normal_identity`
 - `poisson`
@@ -65,115 +111,145 @@ The current implemented families are:
 - `heteroskedastic_normal`
 - `heteroskedastic_normal_ngd`
 
-Useful example commands:
+Typical first changes:
 
-Normal identity example.
-This is the default multiclass-like mean fit.
+```bash
+python fit_single_tree_hist_demo.py --modify family poisson
+python fit_single_tree_hist_demo.py --modify family gamma
+python fit_single_tree_hist_demo.py --modify family negative_binomial
+```
+
+### 2. Dimensions and Data Size
+
+This answers: how many inputs, how many outputs, and how much data?
+
+Use:
+
+```python
+--modify \
+  n_features 8 \
+  n_classes 4 \
+  batch_size 65536 \
+  n_batches 12
+```
+
+Meaning:
+
+- `n_features`
+  input dimension
+- `n_classes`
+  output dimension of the fitted target statistics
+- `batch_size`
+  events per streamed batch
+- `n_batches`
+  number of streamed batches
+
+Total training events are:
+
+```text
+batch_size * n_batches
+```
+
+Example:
 
 ```bash
 python fit_single_tree_hist_demo.py \
-  --plot \
-  --print-trees \
-  --modify family normal_identity
+  --modify n_features 16 n_classes 4 batch_size 32768 n_batches 24
 ```
 
-Poisson MGD example.
-This learns positive mean count predictions.
+### 3. Tree and Training
+
+This answers: how large should the trees be, and how aggressively should boosting update?
+
+Use:
+
+```python
+--modify \
+  max_depth 4 \
+  max_leaves 16 \
+  max_bin 64 \
+  n_boost_rounds 50 \
+  learning_rate 0.1
+```
+
+Meaning:
+
+- `max_depth`
+  maximum tree depth
+- `max_leaves`
+  maximum number of leaves
+- `max_bin`
+  histogram resolution for split search
+- `n_boost_rounds`
+  number of boosting iterations
+- `learning_rate`
+  shrinkage per tree
+
+Example:
 
 ```bash
 python fit_single_tree_hist_demo.py \
-  --plot \
-  --print-trees \
-  --modify family poisson
+  --modify max_depth 4 max_leaves 16 n_boost_rounds 50 learning_rate 0.1
 ```
 
-Poisson NGD example.
-This uses the same Poisson toy, but with family-side Fisher preconditioning.
+## Common Workflows
+
+Run a Gaussian example with more dimensions:
 
 ```bash
 python fit_single_tree_hist_demo.py \
-  --plot \
-  --print-trees \
-  --modify family poisson_ngd
+  --modify family normal_identity n_features 16 n_classes 8
 ```
 
-Gamma MGD example.
-This is a positive continuous target with fixed shape.
+Switch to Poisson:
 
 ```bash
 python fit_single_tree_hist_demo.py \
-  --plot \
-  --print-trees \
-  --modify family gamma
+  --modify family poisson n_features 8 n_classes 4
 ```
 
-Negative binomial MGD example.
-This is an overdispersed count example with fixed dispersion.
+Run the NGD Poisson example:
 
 ```bash
 python fit_single_tree_hist_demo.py \
-  --plot \
-  --print-trees \
-  --modify family negative_binomial
+  --modify family poisson_ngd n_features 8 n_classes 4
 ```
 
-Heteroskedastic normal MGD example.
-This predicts first and second moments and derives variance from them.
+Run everything on CPU:
 
 ```bash
 python fit_single_tree_hist_demo.py \
-  --plot \
-  --print-trees \
-  --modify family heteroskedastic_normal
+  --modify training_backend cpu predict_method cpu cpu_predictor numba_parallel
 ```
 
-Heteroskedastic normal NGD example.
-This uses the same toy, but with an NGD-style family update.
+Run GPU training with GPU prediction:
 
 ```bash
 python fit_single_tree_hist_demo.py \
-  --plot \
-  --print-trees \
-  --modify family heteroskedastic_normal_ngd
+  --modify training_backend gpu predict_method gpu
 ```
 
-## How To Add A New Problem
+Run GPU training but keep prediction on CPU:
 
-The code is now organized in three user-facing directories:
+```bash
+python fit_single_tree_hist_demo.py \
+  --modify training_backend gpu predict_method cpu cpu_predictor numba_parallel
+```
 
-- [families/](/home/rschoefbeck/CMGD-Tree/families)
-  Put the statistical model here.
-  A family defines target statistics, model state, updates, and monitoring loss.
+## Command Line
 
-- [data_providers/](/home/rschoefbeck/CMGD-Tree/data_providers)
-  Put the data source here.
-  Today these are toy generators.
-  Later this is also the right place for a real streamed data loader.
-
-- [examples/](/home/rschoefbeck/CMGD-Tree/examples)
-  Put example-specific defaults here.
-  An example ties together a family choice and the default tree, dataset, and training settings you want to start from.
-
-So the intended pattern is:
-
-- new probabilistic model: add a file in `families/`
-- new toy generator or real loader: add a file in `data_providers/`
-- new runnable configuration: add a file in `examples/`
-
-## Command-Line Options
-
-Top-level flags:
+Top-level options:
 
 - `--modify key value ...`
-  Override any config entry from the tree, dataset, or training groups.
+  override config values
 - `--profile`
-  Print timing and memory summaries for training and evaluation.
+  print timing and memory summaries
 - `--plot`
-  Write plots to `./plots/<plot_training_id>/`.
+  write plots under `./plots/<plot_training_id>/`
 - `--print-trees`
-  Print every fitted tree after the run.
+  print the fitted trees
 - `--full-output`
-  Compatibility alias for `--plot --print-trees`.
+  compatibility alias for `--plot --print-trees`
 
 Example:
 
@@ -181,12 +257,12 @@ Example:
 python fit_single_tree_hist_demo.py \
   --plot \
   --print-trees \
-  --modify family gamma max_depth 4 max_leaves 16 n_features 8
+  --modify family normal_identity n_features 8 n_classes 4 max_depth 3
 ```
 
-## Config Overrides
+## Config Keys
 
-The script has three config groups:
+These are the settings you will usually touch.
 
 ```python
 TREE_CONFIG = {
@@ -228,282 +304,89 @@ TRAINING_CONFIG = {
 }
 ```
 
-### Tree Hyperparameters
+Most important keys:
 
-- `max_bin`
-  Number of histogram bins per feature.
-  Larger values make split search finer, but cost more memory and compute.
+- `family`: statistical model
+- `n_features`: input dimension
+- `n_classes`: output dimension
+- `batch_size`, `n_batches`: training size
+- `max_depth`, `max_leaves`: tree expressivity
+- `n_boost_rounds`, `learning_rate`: boosting strength
+- `training_backend`: `auto`, `gpu`, or `cpu`
+- `predict_method`: `gpu` or `cpu`
+- `cpu_predictor`: `index`, `leaf_mask`, `numba`, or `numba_parallel`
+
+Two keys that are useful but easy to misunderstand:
 
 - `cut_sample_rows`
-  Maximum number of streamed rows used to estimate the feature cuts.
-  This does not cap training rows.
-  It only affects how the bin boundaries are chosen.
-
-- `grow_policy`
-  Tree growth strategy.
-  `depthwise` expands level by level.
-  `lossguide` expands the currently best leaves first.
-
-- `max_depth`
-  Maximum tree depth.
-
-- `max_leaves`
-  Maximum number of leaves.
-  This can be more restrictive than `max_depth`.
-
-- `min_samples_leaf`
-  Minimum effective sample count required in a leaf.
-  Prevents very small leaves.
-
-- `min_split_loss`
-  Minimum gain required to keep a split.
-  Larger values make the tree more conservative.
-
-- `reg_lambda`
-  L2-style regularization term used in split scoring / leaf scoring.
-
-- `family`
-  Which probabilistic example family to use.
-
-- `class_weights`
-  Optional per-target weighting vector.
-  Mainly useful for multi-output normal-style fits.
-
-### Dataset Hyperparameters
-
-- `n_features`
-  Input feature dimension.
-
-- `n_classes`
-  Output target-stat dimension.
-  For some examples this is literally the number of outputs.
-  For heteroskedastic normal it is fixed to `2`, representing `[y, y^2]`.
-
-- `batch_size`
-  Number of streamed events per batch.
-
-- `n_batches`
-  Number of streamed batches.
-  Total training events are `batch_size * n_batches`.
-
-- `seed`
-  Random seed for the toy provider.
-
-- `feature_offset_scale`
-  Provider-side offset used to make the toy data less degenerate.
-
-- `feature_noise`
-  Provider-side feature scale.
-
-### Training Hyperparameters
-
-- `plot_training_id`
-  Output directory name under `./plots/`.
-
-- `plot_bins`
-  Number of bins used in diagnostic plots.
-
-- `plot_mode`
-  Provider-specific plotting mode selector.
-  In most cases, leave this at `all`.
-
-- `threads_per_block`
-  CUDA kernel launch block size for the GPU trainer.
-
-- `training_backend`
-  `auto`, `gpu`, or `cpu`.
-  `auto` uses the GPU when available and otherwise falls back to CPU.
-
-- `cpu_threads`
-  Number of CPU threads to use for CPU prediction and CPU-side update work.
-  `0` resolves to the default thread policy.
-
-- `predict_method`
-  `cpu` or `gpu`.
-  This controls prediction and cache-update prediction, not the tree-fitting backend.
-
-- `cpu_predictor`
-  CPU prediction implementation.
-  Choices:
-  - `index`
-  - `leaf_mask`
-  - `numba`
-  - `numba_parallel`
-
-- `n_boost_rounds`
-  Number of boosting iterations.
-
-- `learning_rate`
-  Shrinkage factor applied to each fitted tree.
-
-- `fresh_inference_batch_size`
-  Optional batch size for the separate fresh-inference benchmark path in profiling mode.
-
-- `fresh_inference_n_batches`
-  Optional number of batches for the separate fresh-inference benchmark path in profiling mode.
+  only controls how many rows are used to estimate feature cuts
+- `max_bin`
+  controls how fine the histogram split search is
 
 ## Example Defaults
 
-Some families come with example-owned defaults.
-These are applied only when you do not override them explicitly.
+Some examples come with their own starter settings.
 
-Current example defaults:
+For example:
 
 - `heteroskedastic_normal`
-  - `n_features=2`
-  - `n_classes=2`
-  - `n_batches=24`
-  - `max_depth=2`
-  - `max_leaves=4`
-  - `n_boost_rounds=50`
-  - `learning_rate=0.2`
-
+  uses a smaller 2D setup and a safer learning rate
 - `gamma`
-  - `n_features=4`
-  - `n_classes=4`
-  - `max_depth=3`
-  - `max_leaves=8`
-  - `n_boost_rounds=50`
-  - `learning_rate=0.2`
+  and `negative_binomial`
+  start with `50` rounds and `learning_rate = 0.2`
 
-- `negative_binomial`
-  - `n_features=4`
-  - `n_classes=4`
-  - `max_depth=3`
-  - `max_leaves=8`
-  - `n_boost_rounds=50`
-  - `learning_rate=0.2`
+These defaults are applied only if you do not override them yourself.
 
 ## Prediction Modes
 
 Prediction is an important runtime choice.
 
-`predict_method=gpu`
-- keeps prediction on the GPU
-- usually best when you are already on the GPU and the batches are large
-- useful when cache updates should stay on-device during GPU training
+Use `predict_method=gpu` when:
 
-`predict_method=cpu`
-- uses the CPU predictors in [single_tree.py](/home/rschoefbeck/CMGD-Tree/single_tree.py)
-- often convenient for small runs and inspection
-- useful when you want to compare CPU inference implementations
+- you are already training on GPU
+- your batches are large
+- you want cache updates to stay on device
 
-CPU predictor choices:
+Use `predict_method=cpu` when:
 
-- `index`
-  Simple index-set traversal.
-- `leaf_mask`
-  Leaf-mask style NumPy predictor.
-- `numba`
-  Compiled single-core CPU predictor.
+- you want easier inspection
+- you want to compare CPU predictors
+- you are running a CPU-only setup
+
+The default CPU predictor is:
+
 - `numba_parallel`
-  Compiled multi-core CPU predictor.
-
-Example:
-
-Run GPU training with GPU prediction:
-
-```bash
-python fit_single_tree_hist_demo.py \
-  --modify training_backend gpu predict_method gpu
-```
-
-Run GPU training with fast multi-core CPU prediction:
-
-```bash
-python fit_single_tree_hist_demo.py \
-  --modify training_backend gpu predict_method cpu cpu_predictor numba_parallel cpu_threads 8
-```
-
-Run everything on CPU:
-
-```bash
-python fit_single_tree_hist_demo.py \
-  --modify training_backend cpu predict_method cpu cpu_predictor numba_parallel cpu_threads 8
-```
-
-## Plotting
-
-Plotting is off by default.
-
-When `--plot` is enabled, plots are written under:
-
-```bash
-./plots/<plot_training_id>/
-```
-
-The actual plots depend on the provider:
-
-- `normal_identity`
-  feature-density plots and feature-target mean overlays
-- `poisson`
-  feature-density plots and feature-target mean overlays
-- `gamma`
-  feature-density plots and feature-target mean overlays
-- `negative_binomial`
-  feature-density plots and feature-target mean overlays
-- `heteroskedastic_normal`
-  observed/predicted mean and observed/predicted variance overlays
-
-For smaller exploratory runs:
-
-```bash
-python fit_single_tree_hist_demo.py \
-  --plot \
-  --modify n_features 4 n_classes 4 plot_training_id small_demo
-```
 
 ## MGD and NGD
 
-The code is organized around additive boosting of tree outputs.
+The trainer always fits trees to a family-supplied pseudo-response.
 
-### MGD
-
-In the MGD examples, the family supplies target statistics `T(y)`, a model state, and a dual prediction.
-At round `t`, the tree is fit to the residual-style pseudo-response
+For MGD, that pseudo-response is the plain residual-style target:
 
 ```text
-R_t(x, y) = T(y) - eta_t^*(x)
+T(y) - eta*(x)
 ```
 
-and the model is updated additively with a learning rate:
+For NGD, the family can precondition that target with the Fisher information:
 
 ```text
-state_{t+1}(x) = state_t(x) + alpha * f_t(x)
+G(x)^{-1} (T(y) - eta*(x))
 ```
 
-The histogram tree learner itself is generic: it just fits the supplied vector pseudo-response.
+So the tree code stays the same, while the family changes the geometry.
 
-### NGD
+## Where To Add Things
 
-In NGD, the trainer still fits a tree to a supplied pseudo-response, but the family changes what that target is.
+If you extend the project:
 
-Instead of the plain residual, the family can supply a Fisher-preconditioned target
+- add a new statistical model in `families/`
+- add a new toy generator or real loader in `data_providers/`
+- add a new runnable setup in `examples/`
 
-```text
-U_t(x, y) = G(state_t(x))^{-1} (T(y) - eta_t^*(x))
-```
+That is the intended workflow for new users as well:
 
-where `G` is the Fisher information in the chosen coordinate system.
-
-So algorithmically:
-
-- MGD is the identity / unpreconditioned case
-- NGD is the family-preconditioned case
-
-This is why both styles can share the same tree trainer.
-
-## Profiling
-
-If you want a timing and memory summary:
-
-```bash
-python fit_single_tree_hist_demo.py --profile
-```
-
-This reports the built-in training and evaluation profiling information.
-
-## Benchmarks
-
-Benchmark utilities live under [benchmarks/](/home/rschoefbeck/CMGD-Tree/benchmarks).
-See [benchmarks/README.md](/home/rschoefbeck/CMGD-Tree/benchmarks/README.md) for how to run them.
+1. start from an existing example
+2. change the family
+3. change the dimensions
+4. change the tree and training settings
+5. run again
