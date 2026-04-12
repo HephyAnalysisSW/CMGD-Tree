@@ -218,4 +218,5 @@ __marimo__/
 *.out
 *.run.xml
 *.synctex.gz
+*.log
 *.toc
